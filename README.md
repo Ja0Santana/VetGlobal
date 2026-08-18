@@ -20,6 +20,9 @@ API assincrona para ingestao, processamento e sumarizacao de prontuarios e docum
 
 ```text
 VetGlobal/
+├── .github/
+│   └── workflows/
+│       └── ci.yml                # Pipeline de CI (testes, migracoes e build Docker)
 ├── app/
 │   ├── core/
 │   │   ├── config.py             # Configuracoes da aplicacao com pydantic-settings
@@ -42,11 +45,15 @@ VetGlobal/
 │   └── script.py.mako            # Template de geracao de novas revisoes
 ├── storage/
 │   └── uploads/                  # Diretorio local para persistencia de arquivos
+├── tests/
+│   ├── __init__.py
+│   └── test_health.py            # Testes do endpoint de healthcheck
 ├── .env.example                  # Variaveis de ambiente de referencia
 ├── alembic.ini                   # Configuracao principal do Alembic
 ├── Dockerfile                    # Build da imagem da aplicacao
 ├── docker-compose.yml            # Orquestracao de servicos (API + PostgreSQL)
 ├── pyrightconfig.json            # Vinculacao do Language Server a .venv
+├── pytest.ini                    # Configuracao do executor de testes pytest
 ├── README.md                     # Documentacao do projeto
 └── requirements.txt              # Dependencias do projeto
 ```
@@ -116,7 +123,21 @@ VetGlobal/
 
 ---
 
-## 4. Endpoints Implementados
+## 4. Instrucoes de Testes
+
+Os testes automatizados utilizam `pytest`, `pytest-asyncio` e `httpx`:
+
+```bash
+# Executar todos os testes
+pytest
+
+# Executar com saida detalhada
+pytest -v
+```
+
+---
+
+## 5. Endpoints Implementados
 
 ### `GET /health`
 Verifica a saude da aplicacao e a conectividade com o PostgreSQL executando `SELECT 1`.
@@ -131,14 +152,14 @@ Verifica a saude da aplicacao e a conectividade com o PostgreSQL executando `SEL
 
 ---
 
-## 5. Modelagem de Dominio e Decisoes de Banco (Fase 2)
+## 6. Modelagem de Dominio e Decisoes de Banco (Fase 2)
 
-### 5.1. Modelos Implementados
+### 6.1. Modelos Implementados
 - **`Pet` (`pets`)**: Cadastro basico do animal (`name`, `owner_name`, `created_at`).
 - **`Document` (`documents`)**: Metadados do arquivo anexado (`pet_id`, `filename`, `file_path`, `file_hash`, `created_at`).
 - **`Job` (`jobs`)**: Rastreabilidade do processamento assincrono (`document_id`, `status`, `summary`, `error_message`, `created_at`, `started_at`, `completed_at`, `updated_at`).
 
-### 5.2. Decisoes Tecnicas Adotadas
+### 6.2. Decisoes Tecnicas Adotadas
 
 1. **SQLAlchemy 2.0 Declarative Mapping**:
    - Uso de `Mapped[...]` e `mapped_column(...)`, garantindo tipagem estatica estrita e validacao pelo Pyright/Mypy.
@@ -162,7 +183,7 @@ Verifica a saude da aplicacao e a conectividade com o PostgreSQL executando `SEL
 
 ---
 
-## 6. Proximas Etapas (Roadmap)
+## 7. Proximas Etapas (Roadmap)
 
 - **Fase 3**: Endpoints de CRUD de Pets (`POST /pets`) e Upload de Documentos (`POST /pets/{pet_id}/documents`) com calculo de hash SHA-256 em streaming.
 - **Fase 4**: Callback de conclusao do worker (`POST /internal/jobs/{job_id}/complete`) e consulta de documento (`GET /documents/{document_id}`).

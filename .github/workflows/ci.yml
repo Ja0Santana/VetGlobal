@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vetglobal
+          POSTGRES_PASSWORD: vetglobal
+          POSTGRES_DB: vetglobal
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run database migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://vetglobal:vetglobal@localhost:5432/vetglobal
+          STORAGE_PATH: ./storage/uploads
+        run: |
+          alembic upgrade head
+
+      - name: Run automated tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://vetglobal:vetglobal@localhost:5432/vetglobal
+          STORAGE_PATH: ./storage/uploads
+        run: |
+          pytest -v
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          docker build -t vetglobal-api:latest .
