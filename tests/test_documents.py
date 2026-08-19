@@ -14,6 +14,9 @@ from app.models.job_status import JobStatus
 
 
 def _override_session(mock_session):
+    if not hasattr(mock_session, "expire_all") or isinstance(mock_session.expire_all, AsyncMock):
+        mock_session.expire_all = MagicMock()
+
     async def _override():
         yield mock_session
     app.dependency_overrides[get_async_session] = _override
@@ -415,5 +418,230 @@ async def test_get_document_invalid_id_returns_422(invalid_id):
         response = await client.get(f"/documents/{invalid_id}")
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_poll_document_returns_200_immediately_when_done():
+    mock_session = AsyncMock()
+
+    doc = Document(
+        pet_id=1,
+        filename="prontuario.pdf",
+        file_path="/storage/prontuario.pdf",
+        file_hash="hash123",
+    )
+    doc.id = 10
+    doc.created_at = datetime.now(timezone.utc)
+
+    job = Job(document_id=10, status=JobStatus.DONE)
+    job.id = 55
+    job.summary = "Patient recovered successfully."
+    job.created_at = datetime.now(timezone.utc)
+    job.completed_at = datetime.now(timezone.utc)
+
+    doc.jobs = [job]
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = doc
+    mock_session.execute.return_value = mock_result
+
+    _override_session(mock_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/documents/10/poll")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == 10
+    assert data["latest_job"]["status"] == "DONE"
+    assert data["latest_job"]["summary"] == "Patient recovered successfully."
+    assert "Cache-Control" in response.headers
+
+
+@pytest.mark.asyncio
+async def test_poll_document_returns_200_immediately_when_failed():
+    mock_session = AsyncMock()
+
+    doc = Document(
+        pet_id=1,
+        filename="prontuario.pdf",
+        file_path="/storage/prontuario.pdf",
+        file_hash="hash123",
+    )
+    doc.id = 10
+    doc.created_at = datetime.now(timezone.utc)
+
+    job = Job(document_id=10, status=JobStatus.FAILED)
+    job.id = 56
+    job.error_message = "File corrupted"
+    job.created_at = datetime.now(timezone.utc)
+    job.completed_at = datetime.now(timezone.utc)
+
+    doc.jobs = [job]
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = doc
+    mock_session.execute.return_value = mock_result
+
+    _override_session(mock_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/documents/10/poll")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == 10
+    assert data["latest_job"]["status"] == "FAILED"
+    assert data["latest_job"]["error_message"] == "File corrupted"
+
+
+@pytest.mark.asyncio
+async def test_poll_document_returns_200_when_completed_during_polling():
+    mock_session = AsyncMock()
+
+    doc_enqueued = Document(
+        pet_id=1,
+        filename="prontuario.pdf",
+        file_path="/storage/prontuario.pdf",
+        file_hash="hash123",
+    )
+    doc_enqueued.id = 10
+    doc_enqueued.created_at = datetime.now(timezone.utc)
+    job_enqueued = Job(document_id=10, status=JobStatus.ENQUEUED)
+    job_enqueued.id = 55
+    job_enqueued.created_at = datetime.now(timezone.utc)
+    doc_enqueued.jobs = [job_enqueued]
+
+    doc_done = Document(
+        pet_id=1,
+        filename="prontuario.pdf",
+        file_path="/storage/prontuario.pdf",
+        file_hash="hash123",
+    )
+    doc_done.id = 10
+    doc_done.created_at = datetime.now(timezone.utc)
+    job_done = Job(document_id=10, status=JobStatus.DONE)
+    job_done.id = 55
+    job_done.summary = "Completed during wait window"
+    job_done.created_at = datetime.now(timezone.utc)
+    job_done.completed_at = datetime.now(timezone.utc)
+    doc_done.jobs = [job_done]
+
+    mock_result_1 = MagicMock()
+    mock_result_1.scalar_one_or_none.return_value = doc_enqueued
+
+    mock_result_2 = MagicMock()
+    mock_result_2.scalar_one_or_none.return_value = doc_done
+
+    mock_session.execute.side_effect = [mock_result_1, mock_result_2]
+
+    _override_session(mock_session)
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.get("/documents/10/poll?timeout=5")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["latest_job"]["status"] == "DONE"
+    assert data["latest_job"]["summary"] == "Completed during wait window"
+
+
+@pytest.mark.asyncio
+async def test_poll_document_returns_204_on_timeout():
+    mock_session = AsyncMock()
+
+    doc = Document(
+        pet_id=1,
+        filename="prontuario.pdf",
+        file_path="/storage/prontuario.pdf",
+        file_hash="hash123",
+    )
+    doc.id = 10
+    doc.created_at = datetime.now(timezone.utc)
+
+    job = Job(document_id=10, status=JobStatus.ENQUEUED)
+    job.id = 55
+    job.created_at = datetime.now(timezone.utc)
+
+    doc.jobs = [job]
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = doc
+    mock_session.execute.return_value = mock_result
+    mock_session.expire_all = MagicMock()
+
+    _override_session(mock_session)
+
+    with patch("app.services.document_service._get_current_time", side_effect=[0.0, 0.0, 30.0]):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.get("/documents/10/poll?timeout=25")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert "Cache-Control" in response.headers
+
+
+@pytest.mark.asyncio
+async def test_poll_document_not_found_returns_404():
+    mock_session = AsyncMock()
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_session.execute.return_value = mock_result
+
+    _override_session(mock_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/documents/999/poll")
+
+    assert response.status_code == 404
+    assert "999" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_id", [0, -1, -50])
+async def test_poll_document_invalid_id_returns_422(invalid_id):
+    mock_session = AsyncMock()
+    _override_session(mock_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(f"/documents/{invalid_id}/poll")
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_timeout", [0, 0.5, 26, 100])
+async def test_poll_document_invalid_timeout_query_returns_422(invalid_timeout):
+    mock_session = AsyncMock()
+    _override_session(mock_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(f"/documents/1/poll?timeout={invalid_timeout}")
+
+    assert response.status_code == 422
+
 
 
