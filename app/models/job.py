@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, Enum as SQLAlchemyEnum, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -19,7 +19,7 @@ class Job(Base):
         nullable=False,
     )
     status: Mapped[JobStatus] = mapped_column(
-        String(20),
+        SQLAlchemyEnum(JobStatus, native_enum=False, length=20),
         default=JobStatus.ENQUEUED,
         server_default=JobStatus.ENQUEUED.value,
         nullable=False,

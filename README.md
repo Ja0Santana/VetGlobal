@@ -26,7 +26,8 @@ VetGlobal/
 ├── app/
 │   ├── core/
 │   │   ├── config.py             # Configuracoes da aplicacao com pydantic-settings
-│   │   └── database.py           # Engine assincrono, session maker e DeclarativeBase
+│   │   ├── database.py           # Engine assincrono, session maker e DeclarativeBase
+│   │   └── exceptions.py         # Excecoes de dominio desacopladas do transporte HTTP
 │   ├── models/
 │   │   ├── __init__.py           # Exportacao centralizada dos modelos e Base
 │   │   ├── document.py           # Modelo Document com constraint de hash unico
@@ -34,9 +35,16 @@ VetGlobal/
 │   │   ├── job_status.py         # Enum com os estados do processamento (JobStatus)
 │   │   └── pet.py                # Modelo Pet com relacionamento com documents
 │   ├── routers/
-│   │   └── health.py             # Endpoint de verificacao de saude e banco
+│   │   ├── documents.py          # Upload de documentos com deduplicacao
+│   │   ├── health.py             # Endpoint de verificacao de saude e banco
+│   │   └── pets.py               # CRUD de pets
 │   ├── schemas/
-│   │   └── health.py             # Schema Pydantic de resposta do healthcheck
+│   │   ├── document.py           # Schema de resposta de upload (202 Accepted)
+│   │   ├── health.py             # Schema de resposta do healthcheck
+│   │   └── pet.py                # Schemas de entrada e saida de Pet
+│   ├── services/
+│   │   ├── document_service.py   # Logica de ingestao, hashing e persistencia
+│   │   └── pet_service.py        # Logica de criacao e consulta de pets
 │   └── main.py                   # Ponto de entrada da aplicacao FastAPI
 ├── migrations/
 │   ├── versions/
@@ -47,11 +55,14 @@ VetGlobal/
 │   └── uploads/                  # Diretorio local para persistencia de arquivos
 ├── tests/
 │   ├── __init__.py
-│   └── test_health.py            # Testes do endpoint de healthcheck
+│   ├── test_documents.py         # Testes de upload (202, 400, 404, 409)
+│   ├── test_health.py            # Testes do endpoint de healthcheck
+│   └── test_pets.py              # Testes de CRUD de pets (201, 200, 404)
 ├── .env.example                  # Variaveis de ambiente de referencia
 ├── alembic.ini                   # Configuracao principal do Alembic
 ├── Dockerfile                    # Build da imagem da aplicacao
 ├── docker-compose.yml            # Orquestracao de servicos (API + PostgreSQL)
+├── entrypoint.sh                 # Script de inicializacao e execucao de migracoes
 ├── pyrightconfig.json            # Vinculacao do Language Server a .venv
 ├── pytest.ini                    # Configuracao do executor de testes pytest
 ├── README.md                     # Documentacao do projeto
@@ -150,6 +161,49 @@ Verifica a saude da aplicacao e a conectividade com o PostgreSQL executando `SEL
   ```
 - **Resposta (`503 Service Unavailable`)**: Falha na conexao com o banco de dados.
 
+### `POST /pets`
+Cadastra um novo pet no sistema.
+
+- **Request Body**:
+  ```json
+  {
+    "name": "Hank",
+    "owner_name": "John Bergeson"
+  }
+  ```
+- **Resposta (`201 Created`)**:
+  ```json
+  {
+    "id": 1,
+    "name": "Hank",
+    "owner_name": "John Bergeson",
+    "created_at": "2026-08-18T20:00:00Z"
+  }
+  ```
+
+### `GET /pets/{pet_id}`
+Consulta os dados de um pet por ID.
+
+- **Resposta (`200 OK`)**: Retorna os dados do pet.
+- **Resposta (`404 Not Found`)**: Pet nao encontrado.
+
+### `POST /pets/{pet_id}/documents`
+Upload de documento (`.txt` ou `.pdf`) vinculado a um pet. Calcula hash SHA-256 em streaming, persiste o arquivo no disco e enfileira um job assincrono de sumarizacao.
+
+- **Form-Data**: `file` (Multipart file)
+- **Resposta (`202 Accepted`)**:
+  ```json
+  {
+    "document_id": 10,
+    "job_id": 55,
+    "status": "ENQUEUED"
+  }
+  ```
+- **Codigos de Erro**:
+  - `400 Bad Request`: Extensao invalida ou arquivo vazio.
+  - `404 Not Found`: Pet nao encontrado.
+  - `409 Conflict`: Documento identico ja enviado para este pet.
+
 ---
 
 ## 6. Modelagem de Dominio e Decisoes de Banco (Fase 2)
@@ -181,11 +235,27 @@ Verifica a saude da aplicacao e a conectividade com o PostgreSQL executando `SEL
 6. **Migracoes Versionadas com Alembic**:
    - Criacao do script `0001_initial_schema.py` com suporte a execucao assincrona via `migrations/env.py`.
 
+### 6.3. Decisoes de Ingestao (Fase 3)
+
+1. **Excecoes de Dominio Desacopladas do HTTP**:
+   - Services lancam excecoes semanticas (`PetNotFoundException`, `DuplicateDocumentException`, `InvalidFileExtensionException`, `EmptyFileException`) definidas em `app/core/exceptions.py`. Os routers traduzem para HTTP status codes, mantendo a camada de negocio independente do transporte.
+
+2. **Hashing SHA-256 em Streaming**:
+   - O arquivo e lido em chunks de 64KB, calculando o hash simultaneamente a gravacao no disco. Memoria constante independente do tamanho do arquivo.
+
+3. **Limpeza de Arquivos Orfaos**:
+   - Se a transacao de banco falhar apos a gravacao do arquivo no disco, o arquivo e removido automaticamente antes de propagar a excecao. Evita acumulo de lixo no storage.
+
+4. **Sanitizacao e Validacao Estrita de Entradas**:
+   - Sanitizacao automatica com `.strip()` para campos de texto (`name`, `owner_name`) rejeitando strings vazias ou compostas apenas por espacos (`422 Unprocessable Entity`).
+   - Validacao de parametros de rota (`pet_id`, `document_id`) com restricao de inteiros positivos (`ge=1`).
+   - Protecao contra Path Traversal no upload de documentos via `os.path.basename` e limite maximo de tamanho de arquivo de 20MB (`413 Content Too Large`).
+
 ---
 
 ## 7. Proximas Etapas (Roadmap)
 
-- **Fase 3**: Endpoints de CRUD de Pets (`POST /pets`) e Upload de Documentos (`POST /pets/{pet_id}/documents`) com calculo de hash SHA-256 em streaming.
 - **Fase 4**: Callback de conclusao do worker (`POST /internal/jobs/{job_id}/complete`) e consulta de documento (`GET /documents/{document_id}`).
 - **Fase 5**: Endpoint de Long Polling (`GET /documents/{document_id}/poll`) com timeout de 25s e retorno `204 No Content`.
 - **Fase 6**: Testes automatizados e integracao de ponta a ponta.
+
