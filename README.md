@@ -35,15 +35,18 @@ VetGlobal/
 │   │   ├── job_status.py         # Enum com os estados do processamento (JobStatus)
 │   │   └── pet.py                # Modelo Pet com relacionamento com documents
 │   ├── routers/
-│   │   ├── documents.py          # Upload de documentos com deduplicacao
+│   │   ├── documents.py          # Upload e consulta de documentos
 │   │   ├── health.py             # Endpoint de verificacao de saude e banco
+│   │   ├── internal.py           # Callback de conclusao do worker de processamento
 │   │   └── pets.py               # CRUD de pets
 │   ├── schemas/
-│   │   ├── document.py           # Schema de resposta de upload (202 Accepted)
+│   │   ├── document.py           # Schemas de upload e detalhe de documento
 │   │   ├── health.py             # Schema de resposta do healthcheck
+│   │   ├── job.py                # Schemas de callback do worker e conclusao
 │   │   └── pet.py                # Schemas de entrada e saida de Pet
 │   ├── services/
-│   │   ├── document_service.py   # Logica de ingestao, hashing e persistencia
+│   │   ├── document_service.py   # Logica de ingestao, hashing e consulta
+│   │   ├── job_service.py        # Logica de conclusao e idempotencia de jobs
 │   │   └── pet_service.py        # Logica de criacao e consulta de pets
 │   └── main.py                   # Ponto de entrada da aplicacao FastAPI
 ├── migrations/
@@ -55,8 +58,9 @@ VetGlobal/
 │   └── uploads/                  # Diretorio local para persistencia de arquivos
 ├── tests/
 │   ├── __init__.py
-│   ├── test_documents.py         # Testes de upload (202, 400, 404, 409)
+│   ├── test_documents.py         # Testes de upload e consulta de documentos
 │   ├── test_health.py            # Testes do endpoint de healthcheck
+│   ├── test_jobs.py              # Testes do callback do worker (DONE/FAILED/409)
 │   └── test_pets.py              # Testes de CRUD de pets (201, 200, 404)
 ├── .env.example                  # Variaveis de ambiente de referencia
 ├── alembic.ini                   # Configuracao principal do Alembic
@@ -203,6 +207,60 @@ Upload de documento (`.txt` ou `.pdf`) vinculado a um pet. Calcula hash SHA-256 
   - `400 Bad Request`: Extensao invalida ou arquivo vazio.
   - `404 Not Found`: Pet nao encontrado.
   - `409 Conflict`: Documento identico ja enviado para este pet.
+  - `413 Content Too Large`: Tamanho do arquivo excede o limite de 20MB.
+
+### `POST /internal/jobs/{job_id}/complete`
+Endpoint interno para simular o callback de conclusao de um worker de sumarizacao.
+
+- **Request Body (Sucesso)**:
+  ```json
+  {
+    "status": "DONE",
+    "summary": "Patient has a history of intermittent vomiting."
+  }
+  ```
+- **Request Body (Falha)**:
+  ```json
+  {
+    "status": "FAILED",
+    "error": "Could not parse document"
+  }
+  ```
+- **Resposta (`200 OK`)**:
+  ```json
+  {
+    "job_id": 55,
+    "document_id": 10,
+    "status": "DONE",
+    "completed_at": "2026-08-18T20:01:00Z"
+  }
+  ```
+- **Codigos de Erro**:
+  - `404 Not Found`: Job nao encontrado.
+  - `409 Conflict`: Job ja foi finalizado anteriormente (idempotencia).
+  - `422 Unprocessable Entity`: Status invalido, summary ausente para status DONE ou error ausente para status FAILED.
+
+### `GET /documents/{document_id}`
+Consulta os metadados do documento e as informacoes do job mais recente associado.
+
+- **Resposta (`200 OK`)**:
+  ```json
+  {
+    "id": 10,
+    "pet_id": 1,
+    "filename": "prontuario.pdf",
+    "created_at": "2026-08-18T20:00:00Z",
+    "latest_job": {
+      "id": 55,
+      "status": "DONE",
+      "summary": "Patient has a history of intermittent vomiting.",
+      "error_message": null,
+      "completed_at": "2026-08-18T20:01:00Z"
+    }
+  }
+  ```
+- **Codigos de Erro**:
+  - `404 Not Found`: Documento nao encontrado.
 
 ---
 
@@ -251,11 +309,27 @@ Upload de documento (`.txt` ou `.pdf`) vinculado a um pet. Calcula hash SHA-256 
    - Validacao de parametros de rota (`pet_id`, `document_id`) com restricao de inteiros positivos (`ge=1`).
    - Protecao contra Path Traversal no upload de documentos via `os.path.basename` e limite maximo de tamanho de arquivo de 20MB (`413 Content Too Large`).
 
+### 6.4. Decisoes de Callback do Worker e Consulta (Fase 4)
+
+1. **Consistencia Estrita de Payload de Callback**:
+   - Validacao no Pydantic exigindo `summary` para status `DONE` (e anulando `error`) e `error` para status `FAILED` (e anulando `summary`), prevenindo estados inconsistentes no banco.
+
+2. **Idempotencia com Bloqueio de Transicao**:
+   - O endpoint de callback rejeita tentativas de reprocessar jobs que ja sairam de `ENQUEUED` com `409 Conflict`, preservando timestamps de auditoria e evitando sobrescrita concorrente.
+
+3. **Eager Loading com `selectinload`**:
+   - Utilizacao explicita de `selectinload(Document.jobs)` na consulta de documentos para evitar o erro `MissingGreenlet` caracteristico de lazy loading em engines assincronos do SQLAlchemy.
+
+4. **Rastreabilidade e Metricas de Duracao**:
+   - Inclusao de `document_id` no payload de resposta do callback e garantia do preenchimento de `started_at`, permitindo calcular metricas de duracao do processamento (`completed_at - started_at`).
+
+5. **Isolamento e Seguranca de Rotas Internas**:
+   - Em ambiente produtivo corporativo, rotas sob `/internal/*` nao sao expostas na internet publica, ficando isoladas na VPC/rede interna de workers ou protegidas por tokens de autenticacao de servico (mTLS / Shared Secret).
+
 ---
 
 ## 7. Proximas Etapas (Roadmap)
 
-- **Fase 4**: Callback de conclusao do worker (`POST /internal/jobs/{job_id}/complete`) e consulta de documento (`GET /documents/{document_id}`).
 - **Fase 5**: Endpoint de Long Polling (`GET /documents/{document_id}/poll`) com timeout de 25s e retorno `204 No Content`.
 - **Fase 6**: Testes automatizados e integracao de ponta a ponta.
 

@@ -9,7 +9,11 @@ from app.core.exceptions import (
     InvalidFileExtensionException,
     PetNotFoundException,
 )
-from app.schemas.document import DocumentUploadResponse
+from app.schemas.document import (
+    DocumentDetailResponse,
+    DocumentUploadResponse,
+    JobSummaryResponse,
+)
 from app.services import document_service
 
 router = APIRouter(tags=["documents"])
@@ -55,4 +59,42 @@ async def upload_document(
         document_id=document.id,
         job_id=job.id,
         status=getattr(job.status, "value", str(job.status)),
+    )
+
+
+@router.get(
+    "/documents/{document_id}",
+    response_model=DocumentDetailResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get document details and latest summary",
+)
+async def get_document(
+    document_id: int = Path(..., ge=1, description="Positive integer Document ID"),
+    session: AsyncSession = Depends(get_async_session),
+) -> DocumentDetailResponse:
+    document, latest_job = await document_service.get_document_with_latest_job(
+        session, document_id
+    )
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document with id {document_id} not found",
+        )
+
+    job_summary = None
+    if latest_job is not None:
+        job_summary = JobSummaryResponse(
+            id=latest_job.id,
+            status=getattr(latest_job.status, "value", str(latest_job.status)),
+            summary=latest_job.summary,
+            error_message=latest_job.error_message,
+            completed_at=latest_job.completed_at,
+        )
+
+    return DocumentDetailResponse(
+        id=document.id,
+        pet_id=document.pet_id,
+        filename=document.filename,
+        created_at=document.created_at,
+        latest_job=job_summary,
     )

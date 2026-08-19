@@ -34,3 +34,25 @@ class FileSizeExceededException(Exception):
         self.max_size_mb = max_size_mb
         super().__init__(f"File size exceeds maximum allowed limit of {max_size_mb}MB")
 
+
+class JobNotFoundException(Exception):
+    def __init__(self, job_id: int):
+        self.job_id = job_id
+        super().__init__(f"Job with id {job_id} not found")
+
+
+class JobAlreadyCompletedException(Exception):
+    def __init__(self, job_id: int, current_status: str):
+        self.job_id = job_id
+        self.current_status = current_status
+        super().__init__(
+            f"Job {job_id} is already completed with status '{current_status}'"
+        )
+
+
+class DocumentNotFoundException(Exception):
+    def __init__(self, document_id: int):
+        self.document_id = document_id
+        super().__init__(f"Document with id {document_id} not found")
+
+
