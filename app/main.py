@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from app.routers.health import router as health_router
 from app.routers.pets import router as pets_router
 from app.routers.documents import router as documents_router
+from app.routers.internal import router as internal_router
 
 app = FastAPI(
     title="VetGlobal API",
@@ -13,3 +14,5 @@ app = FastAPI(
 app.include_router(health_router)
 app.include_router(pets_router)
 app.include_router(documents_router)
+app.include_router(internal_router)
+

@@ -1,12 +1,13 @@
 import hashlib
 import os
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import aiofiles
 from fastapi import UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.exceptions import (
@@ -126,3 +127,28 @@ async def upload_document(
     await session.refresh(job)
 
     return document, job
+
+
+async def get_document_with_latest_job(
+    session: AsyncSession, document_id: int
+) -> Tuple[Optional[Document], Optional[Job]]:
+    query = (
+        select(Document)
+        .options(selectinload(Document.jobs))
+        .where(Document.id == document_id)
+    )
+    result = await session.execute(query)
+    document = result.scalar_one_or_none()
+
+    if document is None:
+        return None, None
+
+    latest_job = None
+    if document.jobs:
+        latest_job = sorted(
+            document.jobs,
+            key=lambda item: item.created_at,
+            reverse=True,
+        )[0]
+
+    return document, latest_job

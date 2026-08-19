@@ -305,3 +305,115 @@ async def test_upload_sanitizes_path_traversal_filename():
     assert response.status_code == 202
     assert response.json()["document_id"] == 12
 
+
+@pytest.mark.asyncio
+async def test_get_document_with_latest_job_returns_200():
+    mock_session = AsyncMock()
+
+    doc = Document(
+        pet_id=1,
+        filename="prontuario.pdf",
+        file_path="/storage/prontuario.pdf",
+        file_hash="hash123",
+    )
+    doc.id = 10
+    doc.created_at = datetime.now(timezone.utc)
+
+    job = Job(document_id=10, status=JobStatus.DONE)
+    job.id = 55
+    job.summary = "Patient is recovering well."
+    job.created_at = datetime.now(timezone.utc)
+    job.completed_at = datetime.now(timezone.utc)
+
+    doc.jobs = [job]
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = doc
+    mock_session.execute.return_value = mock_result
+
+    _override_session(mock_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/documents/10")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == 10
+    assert data["pet_id"] == 1
+    assert data["filename"] == "prontuario.pdf"
+    assert data["latest_job"] is not None
+    assert data["latest_job"]["id"] == 55
+    assert data["latest_job"]["status"] == "DONE"
+    assert data["latest_job"]["summary"] == "Patient is recovering well."
+
+
+@pytest.mark.asyncio
+async def test_get_document_without_jobs_returns_200():
+    mock_session = AsyncMock()
+
+    doc = Document(
+        pet_id=1,
+        filename="prontuario.pdf",
+        file_path="/storage/prontuario.pdf",
+        file_hash="hash123",
+    )
+    doc.id = 10
+    doc.created_at = datetime.now(timezone.utc)
+    doc.jobs = []
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = doc
+    mock_session.execute.return_value = mock_result
+
+    _override_session(mock_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/documents/10")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == 10
+    assert data["latest_job"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_document_not_found_returns_404():
+    mock_session = AsyncMock()
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_session.execute.return_value = mock_result
+
+    _override_session(mock_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/documents/999")
+
+    assert response.status_code == 404
+    assert "999" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_id", [0, -1, -100])
+async def test_get_document_invalid_id_returns_422(invalid_id):
+    mock_session = AsyncMock()
+    _override_session(mock_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(f"/documents/{invalid_id}")
+
+    assert response.status_code == 422
+
+
