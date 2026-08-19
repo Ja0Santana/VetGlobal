@@ -8,7 +8,11 @@ from app.core.exceptions import (
 )
 from app.models.job import Job
 from app.models.job_status import JobStatus
-from app.schemas.job import JobCompleteRequest
+from app.schemas.job import (
+    JobCompleteRequest,
+    JobFailureRequest,
+    JobSuccessRequest,
+)
 
 
 async def complete_job(
@@ -27,7 +31,7 @@ async def complete_job(
         raise JobAlreadyCompletedException(job_id, current_status)
 
     job.status = payload.status
-    if payload.status == JobStatus.DONE:
+    if isinstance(payload, JobSuccessRequest):
         job.summary = payload.summary
         job.error_message = None
     else:
