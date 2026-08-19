@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Path, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_session
 from app.core.exceptions import (
     DuplicateDocumentException,
     EmptyFileException,
+    FileSizeExceededException,
     InvalidFileExtensionException,
     PetNotFoundException,
 )
@@ -21,8 +22,8 @@ router = APIRouter(tags=["documents"])
     summary="Upload a document for a pet",
 )
 async def upload_document(
-    pet_id: int,
-    file: UploadFile,
+    pet_id: int = Path(..., ge=1, description="Positive integer ID"),
+    file: UploadFile = ...,
     session: AsyncSession = Depends(get_async_session),
 ) -> DocumentUploadResponse:
     try:
@@ -34,14 +35,14 @@ async def upload_document(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(error),
         )
-    except InvalidFileExtensionException as error:
+    except (InvalidFileExtensionException, EmptyFileException) as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(error),
         )
-    except EmptyFileException as error:
+    except FileSizeExceededException as error:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=str(error),
         )
     except DuplicateDocumentException as error:

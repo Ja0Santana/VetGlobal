@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_session
@@ -30,7 +30,7 @@ async def create_pet(
     summary="Get pet by ID",
 )
 async def get_pet(
-    pet_id: int,
+    pet_id: int = Path(..., ge=1, description="Positive integer ID"),
     session: AsyncSession = Depends(get_async_session),
 ) -> PetResponse:
     pet = await pet_service.get_pet_by_id(session, pet_id)

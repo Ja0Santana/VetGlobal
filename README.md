@@ -246,6 +246,11 @@ Upload de documento (`.txt` ou `.pdf`) vinculado a um pet. Calcula hash SHA-256 
 3. **Limpeza de Arquivos Orfaos**:
    - Se a transacao de banco falhar apos a gravacao do arquivo no disco, o arquivo e removido automaticamente antes de propagar a excecao. Evita acumulo de lixo no storage.
 
+4. **Sanitizacao e Validacao Estrita de Entradas**:
+   - Sanitizacao automatica com `.strip()` para campos de texto (`name`, `owner_name`) rejeitando strings vazias ou compostas apenas por espacos (`422 Unprocessable Entity`).
+   - Validacao de parametros de rota (`pet_id`, `document_id`) com restricao de inteiros positivos (`ge=1`).
+   - Protecao contra Path Traversal no upload de documentos via `os.path.basename` e limite maximo de tamanho de arquivo de 20MB (`413 Content Too Large`).
+
 ---
 
 ## 7. Proximas Etapas (Roadmap)

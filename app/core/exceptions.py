@@ -27,3 +27,10 @@ class DuplicateDocumentException(Exception):
         super().__init__(
             f"Document with hash '{file_hash[:12]}' already exists for pet {pet_id}"
         )
+
+
+class FileSizeExceededException(Exception):
+    def __init__(self, max_size_mb: int):
+        self.max_size_mb = max_size_mb
+        super().__init__(f"File size exceeds maximum allowed limit of {max_size_mb}MB")
+

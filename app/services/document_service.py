@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.exceptions import (
     DuplicateDocumentException,
     EmptyFileException,
+    FileSizeExceededException,
     InvalidFileExtensionException,
     PetNotFoundException,
 )
@@ -22,12 +23,23 @@ from app.services.pet_service import get_pet_by_id
 
 ALLOWED_EXTENSIONS = [".txt", ".pdf"]
 CHUNK_SIZE = 65_536
+MAX_FILE_SIZE_MB = 20
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
 
-def _validate_file_extension(filename: str) -> None:
-    extension = Path(filename).suffix.lower()
+def _sanitize_and_validate_filename(raw_filename: str | None) -> str:
+    if raw_filename is None:
+        raise InvalidFileExtensionException("unknown", ALLOWED_EXTENSIONS)
+
+    sanitized = os.path.basename(raw_filename).strip()
+    if not sanitized:
+        raise InvalidFileExtensionException("empty", ALLOWED_EXTENSIONS)
+
+    extension = Path(sanitized).suffix.lower()
     if extension not in ALLOWED_EXTENSIONS:
-        raise InvalidFileExtensionException(filename, ALLOWED_EXTENSIONS)
+        raise InvalidFileExtensionException(sanitized, ALLOWED_EXTENSIONS)
+
+    return sanitized
 
 
 async def _save_file_with_hash(
@@ -43,9 +55,11 @@ async def _save_file_with_hash(
     try:
         async with aiofiles.open(temp_path, "wb") as destination:
             while chunk := await file.read(CHUNK_SIZE):
+                total_bytes += len(chunk)
+                if total_bytes > MAX_FILE_SIZE_BYTES:
+                    raise FileSizeExceededException(MAX_FILE_SIZE_MB)
                 sha256_hash.update(chunk)
                 await destination.write(chunk)
-                total_bytes += len(chunk)
 
         if total_bytes == 0:
             os.remove(temp_path)
@@ -59,7 +73,7 @@ async def _save_file_with_hash(
 
         return final_path, final_filename, file_hash
 
-    except (EmptyFileException, Exception):
+    except (EmptyFileException, FileSizeExceededException, Exception):
         if os.path.exists(temp_path):
             os.remove(temp_path)
         raise
@@ -68,17 +82,14 @@ async def _save_file_with_hash(
 async def upload_document(
     session: AsyncSession, pet_id: int, file: UploadFile
 ) -> Tuple[Document, Job]:
-    if file.filename is None:
-        raise InvalidFileExtensionException("unknown", ALLOWED_EXTENSIONS)
-
-    _validate_file_extension(file.filename)
+    sanitized_filename = _sanitize_and_validate_filename(file.filename)
 
     pet = await get_pet_by_id(session, pet_id)
     if pet is None:
         raise PetNotFoundException(pet_id)
 
     file_path, final_filename, file_hash = await _save_file_with_hash(
-        file, settings.STORAGE_PATH, pet_id, file.filename
+        file, settings.STORAGE_PATH, pet_id, sanitized_filename
     )
 
     existing_document = await session.execute(
@@ -94,7 +105,7 @@ async def upload_document(
 
     document = Document(
         pet_id=pet_id,
-        filename=file.filename,
+        filename=sanitized_filename,
         file_path=file_path,
         file_hash=file_hash,
     )
