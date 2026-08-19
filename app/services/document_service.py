@@ -1,7 +1,9 @@
+import asyncio
 import hashlib
 import os
+import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Callable, Coroutine, Optional, Tuple
 
 import aiofiles
 from fastapi import UploadFile
@@ -11,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.exceptions import (
+    DocumentNotFoundException,
     DuplicateDocumentException,
     EmptyFileException,
     FileSizeExceededException,
@@ -152,3 +155,42 @@ async def get_document_with_latest_job(
         )[0]
 
     return document, latest_job
+
+
+def _get_current_time() -> float:
+    return time.monotonic()
+
+
+async def poll_document_status(
+    session: AsyncSession,
+    document_id: int,
+    timeout_seconds: float = 25.0,
+    poll_interval_seconds: float = 1.0,
+    is_disconnected_callable: Optional[Callable[[], Coroutine[Any, Any, bool]]] = None,
+) -> Tuple[Optional[Document], Optional[Job]]:
+    start_time = _get_current_time()
+
+    while True:
+        if is_disconnected_callable is not None:
+            is_disconnected = await is_disconnected_callable()
+            if is_disconnected:
+                return None, None
+
+        session.expire_all()
+        document, latest_job = await get_document_with_latest_job(session, document_id)
+
+        if document is None:
+            raise DocumentNotFoundException(document_id)
+
+        if latest_job is not None:
+            status_value = getattr(latest_job.status, "value", str(latest_job.status))
+            if status_value in (JobStatus.DONE.value, JobStatus.FAILED.value):
+                return document, latest_job
+
+        elapsed_time = _get_current_time() - start_time
+        if elapsed_time >= timeout_seconds:
+            return None, None
+
+        sleep_duration = min(poll_interval_seconds, timeout_seconds - elapsed_time)
+        await asyncio.sleep(sleep_duration)
+

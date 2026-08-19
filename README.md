@@ -259,8 +259,32 @@ Consulta os metadados do documento e as informacoes do job mais recente associad
     }
   }
   ```
+### `GET /documents/{document_id}/poll`
+Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos aguardando o processamento assincrono do documento.
+
+- **Query Parameters (Opcionais)**:
+  - `timeout` (float, default: `25.0`, min: `1.0`, max: `25.0`): Tempo maximo de espera em segundos.
+- **Resposta quando Concluido (`200 OK`)**:
+  ```json
+  {
+    "id": 10,
+    "pet_id": 1,
+    "filename": "prontuario.pdf",
+    "created_at": "2026-08-18T20:00:00Z",
+    "latest_job": {
+      "id": 55,
+      "status": "DONE",
+      "summary": "Patient has a history of intermittent vomiting.",
+      "error_message": null,
+      "completed_at": "2026-08-18T20:01:00Z"
+    }
+  }
+  ```
+- **Resposta em Timeout (`204 No Content`)**:
+  - Retornado quando o timeout de 25 segundos expira e o documento ainda se encontra em processamento (`ENQUEUED`), indicando ao cliente para realizar um novo poll sem erro de conexao.
 - **Codigos de Erro**:
   - `404 Not Found`: Documento nao encontrado.
+  - `422 Unprocessable Entity`: ID invalido (`document_id <= 0`) ou parametro de timeout fora do intervalo permitido.
 
 ---
 
@@ -311,8 +335,8 @@ Consulta os metadados do documento e as informacoes do job mais recente associad
 
 ### 6.4. Decisoes de Callback do Worker e Consulta (Fase 4)
 
-1. **Consistencia Estrita de Payload de Callback**:
-   - Validacao no Pydantic exigindo `summary` para status `DONE` (e anulando `error`) e `error` para status `FAILED` (e anulando `summary`), prevenindo estados inconsistentes no banco.
+1. **Consistencia Estrita de Payload de Callback (Discriminated Union)**:
+   - Separacao em DTOs especificos (`JobSuccessRequest` e `JobFailureRequest`) com discriminator `status`, eliminando campos redundantes e gerando documentacao OpenAPI/Swagger limpa.
 
 2. **Idempotencia com Bloqueio de Transicao**:
    - O endpoint de callback rejeita tentativas de reprocessar jobs que ja sairam de `ENQUEUED` com `409 Conflict`, preservando timestamps de auditoria e evitando sobrescrita concorrente.
@@ -326,10 +350,23 @@ Consulta os metadados do documento e as informacoes do job mais recente associad
 5. **Isolamento e Seguranca de Rotas Internas**:
    - Em ambiente produtivo corporativo, rotas sob `/internal/*` nao sao expostas na internet publica, ficando isoladas na VPC/rede interna de workers ou protegidas por tokens de autenticacao de servico (mTLS / Shared Secret).
 
+### 6.5. Decisoes de Long Polling e Tempo Real (Fase 5)
+
+1. **Assincronismo Nao-Bloqueante com `asyncio.sleep`**:
+   - As conexoes abertas durante os 25 segundos de polling utilizam o event loop assincrono, consumindo uso minimo de memoria e CPU sem prender threads do servidor.
+
+2. **Prevencao de Leituras Obsoletas (`session.expire_all()`)**:
+   - Invocacao de `session.expire_all()` a cada ciclo de polling para invalidar o Identity Map do SQLAlchemy, garantindo a leitura direta do estado mais recente gravado pelo worker no banco de dados.
+
+3. **Cancelamento Eficiente por Desconexao (`request.is_disconnected`)**:
+   - Verificacao ativa do estado da conexao com o cliente. Se o usuario fechar o navegador ou cancelar o request, o loop e encerrado imediatamente para economizar recursos do PostgreSQL.
+
+4. **Desativacao de Cache HTTP (`Cache-Control: no-cache, no-store`)**:
+   - Respostas do endpoint `/poll` contem headers explicitos para evitar que proxies ou navegadores utilizem respostas em cache.
+
 ---
 
 ## 7. Proximas Etapas (Roadmap)
 
-- **Fase 5**: Endpoint de Long Polling (`GET /documents/{document_id}/poll`) com timeout de 25s e retorno `204 No Content`.
 - **Fase 6**: Testes automatizados e integracao de ponta a ponta.
 
