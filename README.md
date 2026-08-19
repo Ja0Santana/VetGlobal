@@ -52,6 +52,7 @@ VetGlobal/
 ├── alembic.ini                   # Configuracao principal do Alembic
 ├── Dockerfile                    # Build da imagem da aplicacao
 ├── docker-compose.yml            # Orquestracao de servicos (API + PostgreSQL)
+├── entrypoint.sh                 # Script de inicializacao e execucao de migracoes
 ├── pyrightconfig.json            # Vinculacao do Language Server a .venv
 ├── pytest.ini                    # Configuracao do executor de testes pytest
 ├── README.md                     # Documentacao do projeto
