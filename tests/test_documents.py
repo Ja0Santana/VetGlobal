@@ -644,4 +644,60 @@ async def test_poll_document_invalid_timeout_query_returns_422(invalid_timeout):
     assert response.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_poll_document_with_after_job_id_filter():
+    mock_session = AsyncMock()
+
+    doc = Document(
+        pet_id=1,
+        filename="prontuario.pdf",
+        file_path="/storage/prontuario.pdf",
+        file_hash="hash123",
+    )
+    doc.id = 10
+    doc.created_at = datetime.now(timezone.utc)
+
+    job = Job(document_id=10, status=JobStatus.DONE)
+    job.id = 55
+    job.summary = "New summary"
+    job.created_at = datetime.now(timezone.utc)
+    job.completed_at = datetime.now(timezone.utc)
+    doc.jobs = [job]
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = doc
+    mock_session.execute.return_value = mock_result
+    mock_session.expire_all = MagicMock()
+
+    _override_session(mock_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        resp_valid = await client.get("/documents/10/poll?after_job_id=50")
+        assert resp_valid.status_code == 200
+        assert resp_valid.json()["latest_job"]["id"] == 55
+
+        with patch("app.services.document_service._get_current_time", side_effect=[0.0, 0.0, 30.0]):
+            resp_timeout = await client.get("/documents/10/poll?after_job_id=55")
+            assert resp_timeout.status_code == 204
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_after_job_id", [-1, -50])
+async def test_poll_document_invalid_after_job_id_returns_422(invalid_after_job_id):
+    mock_session = AsyncMock()
+    _override_session(mock_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(f"/documents/1/poll?after_job_id={invalid_after_job_id}")
+
+    assert response.status_code == 422
+
+
+
 

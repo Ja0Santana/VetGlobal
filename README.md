@@ -264,6 +264,7 @@ Consulta os metadados do documento e as informacoes do job mais recente associad
 Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos aguardando o processamento assincrono do documento.
 
 - **Query Parameters (Opcionais)**:
+  - `after_job_id` (int, default: `0`, min: `0`): Filtra apenas jobs com ID estritamente maior que o valor informado.
   - `timeout` (float, default: `25.0`, min: `1.0`, max: `25.0`): Tempo maximo de espera em segundos.
 - **Resposta quando Concluido (`200 OK`)**:
   ```json
@@ -282,7 +283,7 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
   }
   ```
 - **Resposta em Timeout (`204 No Content`)**:
-  - Retornado quando o timeout de 25 segundos expira e o documento ainda se encontra em processamento (`ENQUEUED`), indicando ao cliente para realizar um novo poll sem erro de conexao.
+  - Retornado quando o timeout de 25 segundos expira e o documento ainda se encontra em processamento (`ENQUEUED`) ou nenhum novo job maior que `after_job_id` foi concluido, indicando ao cliente para realizar um novo poll sem erro de conexao.
 - **Codigos de Erro**:
   - `404 Not Found`: Documento nao encontrado.
   - `422 Unprocessable Entity`: ID invalido (`document_id <= 0`) ou parametro de timeout fora do intervalo permitido.
@@ -359,10 +360,16 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 2. **Prevencao de Leituras Obsoletas (`session.expire_all()`)**:
    - Invocacao de `session.expire_all()` a cada ciclo de polling para invalidar o Identity Map do SQLAlchemy, garantindo a leitura direta do estado mais recente gravado pelo worker no banco de dados.
 
-3. **Cancelamento Eficiente por Desconexao (`request.is_disconnected`)**:
+3. **Gerenciamento Eficiente do Pool de Conexoes**:
+   - Execucao de reset transacional (`session.rollback()`) a cada intervalo de espera antes do repouso assincrono, liberando a transacao no PostgreSQL e prevenindo que conexoes fiquem presas em estado *idle in transaction* durante o long polling.
+
+4. **Filtragem Granular com `after_job_id`**:
+   - Suporte ao parametro de query `after_job_id` (default: 0) permitindo que o cliente aguarde especificamente por novos processamentos superiores ao ID informado, ignorando jobs antigos ja consumidos.
+
+5. **Cancelamento Eficiente por Desconexao (`request.is_disconnected`)**:
    - Verificacao ativa do estado da conexao com o cliente. Se o usuario fechar o navegador ou cancelar o request, o loop e encerrado imediatamente para economizar recursos do PostgreSQL.
 
-4. **Desativacao de Cache HTTP (`Cache-Control: no-cache, no-store`)**:
+6. **Desativacao de Cache HTTP (`Cache-Control: no-cache, no-store`)**:
    - Respostas do endpoint `/poll` contem headers explicitos para evitar que proxies ou navegadores utilizem respostas em cache.
 
 ### 6.6. Decisoes de Testes e Integracao E2E (Fase 6)
@@ -384,11 +391,12 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 | **Requisito 2: Get Pet** | `GET /pets/{pet_id}` | Concluido | Retorna 200 OK ou 404 Not Found caso inexistente. |
 | **Requisito 3: Upload Document** | `POST /pets/{pet_id}/documents` | Concluido | Streaming SHA-256, deduplicacao (409), limite de 20MB (413), sanitizacao de path traversal. |
 | **Requisito 4: Worker Callback** | `POST /internal/jobs/{job_id}/complete` | Concluido | Discriminated union DTOs, idempotencia garantida (409), metricas de execucao. |
-| **Requisito 5: Poll Status** | `GET /documents/{document_id}/poll` | Concluido | Long polling assincrono (25s), 200 OK em conclusao, 204 No Content em timeout. |
+| **Requisito 5: Poll Status** | `GET /documents/{document_id}/poll?after_job_id=0` | Concluido | Long polling assincrono (25s), filtro after_job_id, 200 OK em conclusao, 204 No Content em timeout. |
 | **Consulta de Documento** | `GET /documents/{document_id}` | Concluido | Retorna metadados e status do ultimo job vinculado com eager loading. |
 | **Healthcheck** | `GET /health` | Concluido | Valida conexao ativa com PostgreSQL (`SELECT 1`). |
 | **Banco de Dados & Migracoes** | PostgreSQL 16 + Alembic | Concluido | Migracoes versionadas assincronas e integridade referencial. |
 | **Containerizacao & CI** | Docker + GitHub Actions | Concluido | `docker-compose.yml`, `entrypoint.sh` automatizado e pipeline de CI no GitHub. |
-| **Qualidade & Testes** | `pytest` + `pytest-cov` | Concluido | 57 testes automatizados aprovados com 96% de cobertura de codigo. |
+| **Qualidade & Testes** | `pytest` + `pytest-cov` | Concluido | 60 testes automatizados aprovados com 96% de cobertura de codigo. |
+
 
 
