@@ -58,10 +58,11 @@ VetGlobal/
 │   └── uploads/                  # Diretorio local para persistencia de arquivos
 ├── tests/
 │   ├── __init__.py
-│   ├── test_documents.py         # Testes de upload e consulta de documentos
+│   ├── test_documents.py         # Testes de upload, consulta e long polling
+│   ├── test_e2e.py               # Testes de integracao End-to-End do fluxo completo
 │   ├── test_health.py            # Testes do endpoint de healthcheck
 │   ├── test_jobs.py              # Testes do callback do worker (DONE/FAILED/409)
-│   └── test_pets.py              # Testes de CRUD de pets (201, 200, 404)
+│   └── test_pets.py              # Testes de CRUD de pets (201, 200, 404, 422)
 ├── .env.example                  # Variaveis de ambiente de referencia
 ├── alembic.ini                   # Configuracao principal do Alembic
 ├── Dockerfile                    # Build da imagem da aplicacao
@@ -138,16 +139,16 @@ VetGlobal/
 
 ---
 
-## 4. Instrucoes de Testes
+## 4. Instrucoes de Testes e Cobertura de Codigo
 
-Os testes automatizados utilizam `pytest`, `pytest-asyncio` e `httpx`:
+Os testes automatizados cobrem testes unitarios, de integracao e ponta a ponta (E2E) com `pytest`, `pytest-asyncio`, `httpx` e `pytest-cov`:
 
 ```bash
-# Executar todos os testes
-pytest
-
-# Executar com saida detalhada
+# Executar todos os testes com saida detalhada
 pytest -v
+
+# Executar testes gerando relatorio de cobertura de codigo (96%+ de cobertura)
+pytest -v --cov=app --cov-report=term-missing
 ```
 
 ---
@@ -364,9 +365,30 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 4. **Desativacao de Cache HTTP (`Cache-Control: no-cache, no-store`)**:
    - Respostas do endpoint `/poll` contem headers explicitos para evitar que proxies ou navegadores utilizem respostas em cache.
 
+### 6.6. Decisoes de Testes e Integracao E2E (Fase 6)
+
+1. **Piramide de Testes Completa**:
+   - **Unitarios & Integracao**: Validação individual de cada camada (routers, services, exceptions, schemas) cobrindo caminhos felizes, bordas e cenários de erro (`400`, `404`, `409`, `413`, `422`).
+   - **End-to-End (E2E)**: Simulação do ciclo de vida completo do prontuário veterinário em `tests/test_e2e.py` (cadastro do pet, upload do documento, consulta pré-worker, callback assíncrono, long polling e bloqueio de idempotência).
+
+2. **Alta Cobertura de Codigo (96%+)**:
+   - Aferição rigorosa via `pytest-cov` garantindo que todos os fluxos críticos de negócio e transporte estejam protegidos contra regressões.
+
 ---
 
-## 7. Proximas Etapas (Roadmap)
+## 7. Status do Projeto e Conformidade com os Requisitos
 
-- **Fase 6**: Testes automatizados e integracao de ponta a ponta.
+| Requisito do Desafio | Endpoint / Componente | Status | Detalhes da Implementacao |
+| :--- | :--- | :---: | :--- |
+| **Requisito 1: Create Pet** | `POST /pets` | Concluido | Retorna 201 Created, sanitiza strings e rejeita espacos em branco (422). |
+| **Requisito 2: Get Pet** | `GET /pets/{pet_id}` | Concluido | Retorna 200 OK ou 404 Not Found caso inexistente. |
+| **Requisito 3: Upload Document** | `POST /pets/{pet_id}/documents` | Concluido | Streaming SHA-256, deduplicacao (409), limite de 20MB (413), sanitizacao de path traversal. |
+| **Requisito 4: Worker Callback** | `POST /internal/jobs/{job_id}/complete` | Concluido | Discriminated union DTOs, idempotencia garantida (409), metricas de execucao. |
+| **Requisito 5: Poll Status** | `GET /documents/{document_id}/poll` | Concluido | Long polling assincrono (25s), 200 OK em conclusao, 204 No Content em timeout. |
+| **Consulta de Documento** | `GET /documents/{document_id}` | Concluido | Retorna metadados e status do ultimo job vinculado com eager loading. |
+| **Healthcheck** | `GET /health` | Concluido | Valida conexao ativa com PostgreSQL (`SELECT 1`). |
+| **Banco de Dados & Migracoes** | PostgreSQL 16 + Alembic | Concluido | Migracoes versionadas assincronas e integridade referencial. |
+| **Containerizacao & CI** | Docker + GitHub Actions | Concluido | `docker-compose.yml`, `entrypoint.sh` automatizado e pipeline de CI no GitHub. |
+| **Qualidade & Testes** | `pytest` + `pytest-cov` | Concluido | 57 testes automatizados aprovados com 96% de cobertura de codigo. |
+
 
