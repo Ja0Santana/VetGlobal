@@ -54,5 +54,5 @@ async def upload_document(
     return DocumentUploadResponse(
         document_id=document.id,
         job_id=job.id,
-        status=job.status.value,
+        status=getattr(job.status, "value", str(job.status)),
     )
