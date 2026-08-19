@@ -133,6 +133,11 @@ async def poll_document(
     request: Request,
     response: Response,
     document_id: int = Path(..., ge=1, description="Positive integer Document ID"),
+    after_job_id: int = Query(
+        default=0,
+        ge=0,
+        description="Only return jobs with ID greater than this value (default: 0)",
+    ),
     timeout: float = Query(
         default=25.0,
         ge=1.0,
@@ -146,6 +151,7 @@ async def poll_document(
         document, latest_job = await document_service.poll_document_status(
             session=session,
             document_id=document_id,
+            after_job_id=after_job_id,
             timeout_seconds=timeout,
             poll_interval_seconds=1.0,
             is_disconnected_callable=request.is_disconnected,

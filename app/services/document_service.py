@@ -164,6 +164,7 @@ def _get_current_time() -> float:
 async def poll_document_status(
     session: AsyncSession,
     document_id: int,
+    after_job_id: int = 0,
     timeout_seconds: float = 25.0,
     poll_interval_seconds: float = 1.0,
     is_disconnected_callable: Optional[Callable[[], Coroutine[Any, Any, bool]]] = None,
@@ -182,10 +183,15 @@ async def poll_document_status(
         if document is None:
             raise DocumentNotFoundException(document_id)
 
-        if latest_job is not None:
+        if latest_job is not None and latest_job.id > after_job_id:
             status_value = getattr(latest_job.status, "value", str(latest_job.status))
             if status_value in (JobStatus.DONE.value, JobStatus.FAILED.value):
                 return document, latest_job
+
+        try:
+            await session.rollback()
+        except Exception:
+            pass
 
         elapsed_time = _get_current_time() - start_time
         if elapsed_time >= timeout_seconds:
