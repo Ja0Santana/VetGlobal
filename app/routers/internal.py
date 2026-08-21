@@ -41,6 +41,6 @@ async def complete_job_callback(
     return JobCompleteResponse(
         job_id=job.id,
         document_id=job.document_id,
-        status=getattr(job.status, "value", str(job.status)),
+        status=job.status_value,
         completed_at=completed_at,
     )

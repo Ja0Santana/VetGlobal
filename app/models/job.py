@@ -50,3 +50,8 @@ class Job(Base):
         "Document",
         back_populates="jobs",
     )
+
+    @property
+    def status_value(self) -> str:
+        return getattr(self.status, "value", str(self.status))
+

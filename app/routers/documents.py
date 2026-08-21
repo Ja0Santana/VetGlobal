@@ -97,7 +97,7 @@ async def get_document(
     if latest_job is not None:
         job_summary = JobSummaryResponse(
             id=latest_job.id,
-            status=getattr(latest_job.status, "value", str(latest_job.status)),
+            status=latest_job.status_value,
             summary=latest_job.summary,
             error_message=latest_job.error_message,
             completed_at=latest_job.completed_at,
@@ -169,7 +169,7 @@ async def poll_document(
 
     job_summary = JobSummaryResponse(
         id=latest_job.id,
-        status=getattr(latest_job.status, "value", str(latest_job.status)),
+        status=latest_job.status_value,
         summary=latest_job.summary,
         error_message=latest_job.error_message,
         completed_at=latest_job.completed_at,
