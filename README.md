@@ -4,7 +4,7 @@ API assincrona para ingestao, processamento e sumarizacao de prontuarios e docum
 
 ---
 
-## 1. Stack Tecnologica Atual
+## 1. Stack Tecnologica
 
 - **Linguagem**: Python 3.11+
 - **Framework Web**: FastAPI
@@ -13,10 +13,131 @@ API assincrona para ingestao, processamento e sumarizacao de prontuarios e docum
 - **Gerenciador de Migracoes**: Alembic (suporte assincrono)
 - **Validacao e Tipagem**: Pydantic v2 + Pydantic Settings
 - **Containers**: Docker e Docker Compose
+- **Testes e Cobertura**: pytest, pytest-asyncio, httpx, pytest-cov (74 testes, 96% de cobertura)
 
 ---
 
-## 2. Estrutura de Diretorios Atual
+## 2. Assumptions (Premissas)
+
+- Um pet e identificado atualmente por um ID no banco de dados.
+- Autenticacao e isolamento entre tenants estao fora do escopo deste exercicio.
+- Apenas documentos `.txt` e `.pdf` sao aceitos.
+- O tamanho maximo de um documento e de 20 MB.
+- Um documento pode ser processado apenas uma vez no fluxo atual.
+- Documentos com o mesmo conteudo para o mesmo pet sao rejeitados.
+- A conclusao de um job so e permitida enquanto ele estiver com status `ENQUEUED`.
+- O endpoint de polling retorna `204 No Content` quando o tempo limite configurado e atingido sem que o processamento seja concluido.
+
+---
+
+## 3. Design Decisions e Racional Tecnico (Por que tomei essas decisoes)
+
+### 3.1. Hashing SHA-256 em Streaming (64KB) & Memoria Constante O(1)
+
+- **Motivacao**: Evitar esgotamento de memoria RAM (Denial of Service - DoS) quando multiplos clientes realizam upload simultaneo de arquivos grandes (ate 20MB).
+- **Decisao**: O arquivo e lido em blocos de 64KB (`aiofiles` / `UploadFile.read(CHUNK_SIZE)`), calculando o hash SHA-256 incrementalmente enquanto grava no storage.
+- **Racional Tecnico**: O consumo de memoria do container permanece fixo em poucos kilobytes por requisicao, independentemente do tamanho do arquivo ou do volume de concorrencia.
+
+### 3.2. Ports & Adapters para Storage (Arquitetura Hexagonal)
+
+- **Motivacao**: Isolar operacoes de I/O em disco das regras de negocio e viabilizar testes unitarios rapidos e deterministicos.
+- **Decisao**: Criacao do protocolo abstrato `StorageProvider` (`app/core/storage.py`) com duas implementacoes:
+  - `LocalStorageProvider`: Persiste arquivos no volume local (`./storage/uploads`), utilizando `uuid.uuid4().hex` no nome temporario para eliminar qualquer colisao de I/O em disco entre uploads concorrentes.
+  - `InMemoryStorageProvider`: Persistencia em memoria (`memory://`) para testes unitarios, executando centenas de testes em milissegundos sem tocar no sistema de arquivos do SO.
+- **Racional Tecnico**: Permite plugar adaptadores de nuvem (`S3StorageProvider`, `GCSStorageProvider`) alterando apenas a injecao de dependencias no FastAPI, sem modificar o `DocumentService`.
+
+### 3.3. Consistencia Transacional e Prevencao de Concorrencia TOCTOU
+
+- **Motivacao**: Prevenir condicoes de corrida (*Time-of-Check to Time-of-Use*) em que duas requisicoes simultaneas com o mesmo arquivo tentam registrar o mesmo documento para o mesmo pet.
+- **Decisao**:
+  - Restricao de unicidade composta no PostgreSQL: `UniqueConstraint('pet_id', 'file_hash', name='uq_pet_document_hash')`.
+  - Tratamento atomico de `IntegrityError` na camada de servico: Caso ocorra colisao concorrente no `flush/commit`, o sistema executa `rollback()`, deleta o arquivo temporario gravado e lanca `DuplicateDocumentException` (`409 Conflict`).
+- **Racional Tecnico**: A garantia de deduplicacao nao depende exclusivamente de checagens na aplicacao, sendo forcada atomicamente pelo proprio banco de dados relacional.
+
+### 3.4. Idempotencia Estrita no Callback do Worker (HTTP 409 Conflict)
+
+- **Motivacao**: Workers distribuidos de IA/OCR operam com semantica *at-least-once*, podendo reenviar mensagens de conclusao em caso de retentativas de rede.
+- **Decisao**: O endpoint `POST /internal/jobs/{job_id}/complete` so aceita finalizar jobs que estejam estritamente em `ENQUEUED`. Tentativas de finalizar jobs em `DONE` ou `FAILED` sao rejeitadas imediatamente com `HTTP 409 Conflict`.
+- **Racional Tecnico**: Evita sobrescrita de resumos clinicos validos e protege os timestamps originais de auditoria medica (`completed_at`).
+
+### 3.5. Long Polling Assincrono com Reset Transacional e Cancelamento Ativo
+
+- **Motivacao**: Manter clientes atualizados em tempo real com baixo acoplamento e sem prender threads ou conexoes no PostgreSQL.
+- **Decisao**:
+  - `asyncio.sleep` no loop de polling de ate 25 segundos.
+  - Invocacao de `session.rollback()` antes de cada repouso assincrono, liberando a conexao transacional no pool do PostgreSQL para outras requisicoes.
+  - Monitoramento de `request.is_disconnected` para abortar o polling imediatamente se o usuario fechar a aba ou cancelar a requisicao.
+- **Racional Tecnico**: Garante alta densidade de conexoes simultaneas por processo sem esgotar o pool do PostgreSQL (*idle in transaction*).
+
+### 3.6. Observabilidade com Correlation ID (`X-Request-ID`)
+
+- **Motivacao**: Rastreabilidade distribuida de ponta a ponta entre requisicoes do cliente, processamento da API e callbacks de workers.
+- **Decisao**: Adocao do middleware `RequestIDMiddleware` no FastAPI, capturando ou gerando um UUID unico injetado nos headers `X-Request-ID` de todas as respostas HTTP.
+- **Racional Tecnico**: Permite correlacionar logs de requisicoes de upload, polling e callbacks de worker em ferramentas de agregacao de logs (Datadog, Loki, CloudWatch).
+
+---
+
+## 4. Analise Aprofundada de Trade-offs e Alternativas Descartadas
+
+### 4.1. Long Polling vs. WebSockets vs. Server-Sent Events (SSE)
+
+| Criterio | Long Polling (Adotado) | Server-Sent Events (SSE) | WebSockets |
+| :--- | :--- | :--- | :--- |
+| **Complexidade de Infra** | Baixa (Stateless HTTP padrao) | Media (Conexao HTTP unidirecional mantida) | Alta (Conexao TCP persistente bidirecional) |
+| **Compatibilidade com Proxies/CDNs** | Total (funciona em qualquer proxy/firewall) | Boa (pode sofrer buffering em proxies corporativos) | Regular (exige suporte explicito a upgrade HTTP/WS) |
+| **Resiliencia a Reconexao** | Nativa (novo request HTTP a cada ciclo) | Nativa no EventSource | Exige logica customizada de heartbeat/reconnect |
+
+**Racional da Escolha**: Para o fluxo de prontuarios veterinarios (onde o cliente aguarda um unico resultado por documento), o Long Polling oferece a melhor relacao de simplicidade operacional, escalabilidade horizontal e resiliencia.
+
+### 4.2. Fila em Tabela SQL (PostgreSQL) vs. Message Broker Dedicado (RabbitMQ / SQS)
+
+| Criterio | Fila em Tabela `jobs` (Adotada) | Message Broker Dedicado |
+| :--- | :--- | :--- |
+| **Atomicidade (Dual-Write)** | Garantida via ACID: O documento e o job sao salvos na mesma transacao. | Risco de escrita dupla: O arquivo pode ser salvo e a mensagem falhar ao ir para a fila (ou vice-versa). |
+| **Complexidade Operacional** | Zero infraestrutura adicional no estagio inicial. | Exige deploy, monitoramento, clustering e DLQs dedicadas. |
+| **Escalabilidade Extrema** | Adequada para milhares de jobs/minuto (com indices em status e created_at). | Necessaria para milhoes de mensagens por segundo. |
+
+**Racional da Escolha**: Eliminar falhas de *dual-write* no estagio inicial, mantendo o sistema simples e robusto com transacoes ACID no PostgreSQL.
+
+### 4.3. Storage Local em Disco vs. Cloud Object Storage (AWS S3 / Azure Blob)
+
+| Criterio | LocalStorageProvider (Adotado) | S3StorageProvider |
+| :--- | :--- | :--- |
+| **Dependencia Externa** | Nenhuma (execucao 100% autonoma local e em Docker). | Exige credenciais AWS, buckets e conectividade de rede externa. |
+| **Custo e Complexidade de Teste** | Custo zero, testavel via `InMemoryStorageProvider`. | Exige LocalStack ou mocks pesados de SDK (boto3/aioboto3). |
+| **Facilidade de Evolucao** | O padrao Ports & Adapters permite plugar `S3StorageProvider` sem tocar na regra de negocio. | Padrao para escala de producao multi-regiao. |
+
+**Racional da Escolha**: Manter o ambiente de avaliacao e desenvolvimento rapido e independente, com a arquitetura pronta para nuvem via injecao de dependencias.
+
+---
+
+## 5. Estrategia de Retentativas e Resiliencia (Retry Strategy)
+
+### 5.1. No Cliente HTTP / Frontend
+
+- **Auto-Reconnect com Backoff Exponencial**: Quando o endpoint de polling atinge o timeout de 25s (`204 No Content`), o cliente abre imediatamente o ciclo seguinte sem interrupcao de UI.
+- **Tratamento de Falhas Transitorias de Rede**: Em caso de erro de rede temporario (`5xx` ou perda de pacote), o cliente aguarda com backoff exponencial incremental (1s, 2s, 4s, ate 16s) com jitter aleatorio para prevenir tempestades de requisicoes (*Thundering Herd Problem*).
+
+### 5.2. Nos Workers Assincronos
+
+- **Isolamento de Falhas e Dead Letter Queue (DLQ)**:
+  - Jobs que falham durante a extracao de OCR ou sumarizacao transmitem status `FAILED` com a descricao do erro via `POST /internal/jobs/{id}/complete`.
+  - O sistema registra `error_message` e encerra o ciclo de vida do job, permitindo analise posterior sem reter o documento em processamento infinito.
+
+---
+
+## 6. Out of Scope (Escopo Intencionalmente Incompleto)
+
+Os seguintes itens foram deliberadamente mantidos fora do escopo inicial para preservar a simplicidade, foco e coesao do desafio:
+
+1. **Pipeline Real de IA/OCR**: O processamento pesado por LLM ou OCR e simulado via endpoint interno de callback, desacoplando a ingestao REST do worker de computacao.
+2. **Autenticacao, Autorizacao e Multi-Tenancy**: Ausencia de tokens JWT/OAuth2 e segregacao por clinica (`tenant_id`), simplificando a avaliacao do core do processamento.
+3. **Provedor Gerenciado de Object Storage (AWS S3)**: Persistencia padrao mantida localmente, desenhada para receber adaptadores S3/Blob como extensao futura.
+4. **Metricas Prometheus e Rastreamento Distribuido (OpenTelemetry)**: Observabilidade coberta por logging estruturado, middleware `X-Request-ID` e endpoint `/health`.
+
+---
+
+## 7. Estrutura de Diretorios
 
 ```text
 VetGlobal/
@@ -25,7 +146,7 @@ VetGlobal/
 │       └── ci.yml                # Pipeline de CI (testes, migracoes e build Docker)
 ├── app/
 │   ├── core/
-│   │   ├── config.py             # Configuracoes da aplicacao com pydantic-settings
+│   │   ├── config.py             # Configuracoes com pydantic-settings
 │   │   ├── database.py           # Engine assincrono, session maker e DeclarativeBase
 │   │   ├── exceptions.py         # Excecoes de dominio desacopladas do transporte HTTP
 │   │   └── storage.py            # Ports & Adapters: StorageProvider (Local & In-Memory)
@@ -36,7 +157,7 @@ VetGlobal/
 │   │   ├── job_status.py         # Enum com os estados do processamento (JobStatus)
 │   │   └── pet.py                # Modelo Pet com relacionamento com documents
 │   ├── routers/
-│   │   ├── documents.py          # Upload e consulta de documentos
+│   │   ├── documents.py          # Upload, consulta e long polling de documentos
 │   │   ├── health.py             # Endpoint de verificacao de saude e banco
 │   │   ├── internal.py           # Callback de conclusao do worker de processamento
 │   │   └── pets.py               # CRUD de pets
@@ -46,10 +167,10 @@ VetGlobal/
 │   │   ├── job.py                # Schemas de callback do worker e conclusao
 │   │   └── pet.py                # Schemas de entrada e saida de Pet
 │   ├── services/
-│   │   ├── document_service.py   # Logica de ingestao, hashing e consulta (DocumentService)
+│   │   ├── document_service.py   # Logica de ingestao, hashing e consulta
 │   │   ├── job_service.py        # Logica de conclusao e idempotencia de jobs
 │   │   └── pet_service.py        # Logica de criacao e consulta de pets
-│   └── main.py                   # Ponto de entrada da aplicacao FastAPI
+│   └── main.py                   # Ponto de entrada FastAPI com middlewares de CORS e X-Request-ID
 ├── migrations/
 │   ├── versions/
 │   │   └── 0001_initial_schema.py # Migracao inicial das tabelas pets, documents e jobs
@@ -59,6 +180,7 @@ VetGlobal/
 │   └── uploads/                  # Diretorio local para persistencia de arquivos
 ├── tests/
 │   ├── __init__.py
+│   ├── test_concurrency.py       # Testes de race conditions com asyncio.gather e asyncio.create_task
 │   ├── test_documents.py         # Testes de upload, consulta e long polling
 │   ├── test_e2e.py               # Testes de integracao End-to-End do fluxo completo
 │   ├── test_health.py            # Testes do endpoint de healthcheck
@@ -72,20 +194,20 @@ VetGlobal/
 ├── entrypoint.sh                 # Script de inicializacao e execucao de migracoes
 ├── pyrightconfig.json            # Vinculacao do Language Server a .venv
 ├── pytest.ini                    # Configuracao do executor de testes pytest
-├── README.md                     # Documentacao do projeto
+├── README.md                     # Documentacao consolidada do projeto
 └── requirements.txt              # Dependencias do projeto
 ```
 
 ---
 
-## 3. Instrucoes de Execucao
+## 8. Instrucoes de Execucao
 
-### 3.1. Pre-requisitos
+### 8.1. Pre-requisitos
 
 - Docker e Docker Compose instalados, OU
 - Python 3.11+ e PostgreSQL 16 configurados localmente.
 
-### 3.2. Execucao via Docker Compose (Recomendado)
+### 8.2. Execucao via Docker Compose (Recomendado)
 
 1. Clonar o repositorio:
 
@@ -100,7 +222,7 @@ VetGlobal/
    cp .env.example .env
    ```
 
-3. Subir os containers da aplicacao e do banco:
+3. Subir os containers da aplicacao e do banco de dados:
 
    ```bash
    docker-compose up --build
@@ -111,7 +233,7 @@ VetGlobal/
    - **Healthcheck**: `http://localhost:8000/health`
    - **Documentacao Interativa (Swagger/OpenAPI)**: `http://localhost:8000/docs`
 
-### 3.3. Execucao Local (Ambiente de Desenvolvimento)
+### 8.3. Execucao Local (Ambiente de Desenvolvimento)
 
 1. Criar e ativar o ambiente virtual:
 
@@ -150,12 +272,12 @@ VetGlobal/
 
 ---
 
-## 4. Instrucoes de Testes e Cobertura de Codigo
+## 9. Instrucoes de Testes e Cobertura de Codigo
 
-Os testes automatizados cobrem testes unitarios, de integracao e ponta a ponta (E2E) com `pytest`, `pytest-asyncio`, `httpx` e `pytest-cov`:
+Os testes automatizados cobrem testes unitarios, de integracao, de concorrencia/condicoes de corrida e ponta a ponta (E2E) com `pytest`, `pytest-asyncio`, `httpx` e `pytest-cov`:
 
 ```bash
-# Executar todos os testes com saida detalhada
+# Executar todos os testes com saida detalhada (74 testes)
 pytest -v
 
 # Executar testes gerando relatorio de cobertura de codigo (96%+ de cobertura)
@@ -164,7 +286,7 @@ pytest -v --cov=app --cov-report=term-missing
 
 ---
 
-## 5. Endpoints Implementados
+## 10. Endpoints Implementados
 
 ### `GET /health`
 
@@ -302,7 +424,6 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 - **Resposta quando Concluido (`200 OK`)**:
 
   ```json
-
   {
     "id": 10,
     "pet_id": 1,
@@ -319,159 +440,7 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
   ```
 
 - **Resposta em Timeout (`204 No Content`)**:
-  - Retornado quando o timeout de 25 segundos expira e o documento ainda se encontra em processamento (`ENQUEUED`) ou nenhum novo job maior que `after_job_id` foi concluido, indicando ao cliente para realizar um novo poll sem erro de conexao.
+  - Retornado quando o timeout de 25 segundos expira e o documento ainda se encontra em processamento (`ENQUEUED`), indicando ao cliente para realizar um novo poll sem erro de conexao.
 - **Codigos de Erro**:
   - `404 Not Found`: Documento nao encontrado.
-  - `422 Unprocessable Entity`: ID invalido (`document_id <= 0`) ou parametro de timeout fora do intervalo permitido.
-
----
-
-## 6. Modelagem de Dominio e Decisoes de Banco (Fase 2)
-
-### 6.1. Modelos Implementados
-
-- **`Pet` (`pets`)**: Cadastro basico do animal (`name`, `owner_name`, `created_at`).
-- **`Document` (`documents`)**: Metadados do arquivo anexado (`pet_id`, `filename`, `file_path`, `file_hash`, `created_at`).
-- **`Job` (`jobs`)**: Rastreabilidade do processamento assincrono (`document_id`, `status`, `summary`, `error_message`, `created_at`, `started_at`, `completed_at`, `updated_at`).
-
-### 6.2. Decisoes Tecnicas Adotadas
-
-1. **SQLAlchemy 2.0 Declarative Mapping**:
-   - Uso de `Mapped[...]` e `mapped_column(...)`, garantindo tipagem estatica estrita e validacao pelo Pyright/Mypy.
-
-2. **Consistencia de Timestamps (`server_default=func.now()`)**:
-   - A geracao de data/hora e delegada ao PostgreSQL, garantindo precisao cronologica uniforme entre multiplas instancias da aplicacao.
-
-3. **Deteccao de Duplicidade em Nivel de Banco**:
-   - Restricao de unicidade composta: `UniqueConstraint('pet_id', 'file_hash', name='uq_pet_document_hash')`.
-   - Impede o upload redundante do mesmo arquivo para o mesmo pet de forma atomica no banco.
-
-4. **Integridade Referencial: Cascade Delete**:
-   - Relacionamentos configurados com `cascade="all, delete-orphan"` e `ondelete="CASCADE"` entre `Pet -> Documents` e `Document -> Jobs`.
-   - **Nota para Producao**: Em ambiente corporativo regulado, a exclusao fisica e substituida por **Soft Delete** (`is_deleted: bool`, `deleted_at: datetime`) para preservar historico e atender normas de auditoria medica.
-
-5. **Ciclo de Vida com Enum Tipado**:
-   - `JobStatus` definido como Python Enum (`ENQUEUED`, `DONE`, `FAILED`), persistido como `String(20)` no banco para flexibilidade de evolucao sem necessidade de DDLs pesados de tipos ENUM nativos.
-
-6. **Migracoes Versionadas com Alembic**:
-   - Criacao do script `0001_initial_schema.py` com suporte a execucao assincrona via `migrations/env.py`.
-
-### 6.3. Decisoes de Ingestao e Inversao de Dependencias (Fase 3)
-
-1. **Inversao de Dependencias no Storage (Ports & Adapters)**:
-   - Abstracao da persistencia de arquivos atraves da interface `StorageProvider` (`app/core/storage.py`) e DTO imutavel `StoredFile`.
-   - Implementacoes intercambiaveis de `LocalStorageProvider` (para producao/desenvolvimento) e `InMemoryStorageProvider` (para testes unitarios sem I/O de disco).
-   - Injecao desacoplada no FastAPI via fabrica `get_document_service` unificando a sessao do banco de dados e o provedor de storage.
-
-2. **Excecoes de Dominio Desacopladas do HTTP**:
-   - Services lancam excecoes semanticas (`PetNotFoundException`, `DuplicateDocumentException`, `InvalidFileExtensionException`, `EmptyFileException`) definidas em `app/core/exceptions.py`. Os routers traduzem para HTTP status codes, mantendo a camada de negocio independente do transporte.
-
-3. **Hashing SHA-256 em Streaming**:
-   - O arquivo e lido em chunks de 64KB, calculando o hash simultaneamente a gravacao no storage. Memoria constante independente do tamanho do arquivo.
-
-4. **Limpeza de Arquivos Orfaos**:
-   - Se a transacao de banco falhar apos a gravacao do arquivo no storage, o metodo `storage.delete_file` e acionado automaticamente antes de propagar a excecao. Evita acumulo de lixo no storage.
-
-5. **Sanitizacao e Validacao Estrita de Entradas**:
-   - Sanitizacao automatica com `.strip()` para campos de texto (`name`, `owner_name`) rejeitando strings vazias ou compostas apenas por espacos (`422 Unprocessable Entity`).
-   - Validacao de parametros de rota (`pet_id`, `document_id`) com restricao de inteiros positivos (`ge=1`).
-   - Protecao contra Path Traversal no upload de documentos via `os.path.basename` e limite maximo de tamanho de arquivo de 20MB (`413 Content Too Large`).
-
-### 6.4. Decisoes de Callback do Worker e Consulta (Fase 4)
-
-1. **Consistencia Estrita de Payload de Callback (Discriminated Union)**:
-   - Separacao em DTOs especificos (`JobSuccessRequest` e `JobFailureRequest`) com discriminator `status`, eliminando campos redundantes e gerando documentacao OpenAPI/Swagger limpa.
-
-2. **Idempotencia com Bloqueio de Transicao**:
-   - O endpoint de callback rejeita tentativas de reprocessar jobs que ja sairam de `ENQUEUED` com `409 Conflict`, preservando timestamps de auditoria e evitando sobrescrita concorrente.
-
-3. **Eager Loading com `selectinload`**:
-   - Utilizacao explicita de `selectinload(Document.jobs)` na consulta de documentos para evitar o erro `MissingGreenlet` caracteristico de lazy loading em engines assincronos do SQLAlchemy.
-
-4. **Rastreabilidade e Metricas de Duracao**:
-   - Inclusao de `document_id` no payload de resposta do callback e garantia do preenchimento de `started_at`, permitindo calcular metricas de duracao do processamento (`completed_at - started_at`).
-
-5. **Isolamento e Seguranca de Rotas Internas**:
-   - Em ambiente produtivo corporativo, rotas sob `/internal/*` nao sao expostas na internet publica, ficando isoladas na VPC/rede interna de workers ou protegidas por tokens de autenticacao de servico (mTLS / Shared Secret).
-
-### 6.5. Decisoes de Long Polling e Tempo Real (Fase 5)
-
-1. **Assincronismo Nao-Bloqueante com `asyncio.sleep`**:
-   - As conexoes abertas durante os 25 segundos de polling utilizam o event loop assincrono, consumindo uso minimo de memoria e CPU sem prender threads do servidor.
-
-2. **Prevencao de Leituras Obsoletas (`session.expire_all()`)**:
-   - Invocacao de `session.expire_all()` a cada ciclo de polling para invalidar o Identity Map do SQLAlchemy, garantindo a leitura direta do estado mais recente gravado pelo worker no banco de dados.
-
-3. **Gerenciamento Eficiente do Pool de Conexoes**:
-   - Execucao de reset transacional (`session.rollback()`) a cada intervalo de espera antes do repouso assincrono, liberando a transacao no PostgreSQL e prevenindo que conexoes fiquem presas em estado *idle in transaction* durante o long polling.
-
-4. **Filtragem Granular com `after_job_id`**:
-   - Suporte ao parametro de query `after_job_id` (default: 0) permitindo que o cliente aguarde especificamente por novos processamentos superiores ao ID informado, ignorando jobs antigos ja consumidos.
-
-5. **Cancelamento Eficiente por Desconexao (`request.is_disconnected`)**:
-   - Verificacao ativa do estado da conexao com o cliente. Se o usuario fechar o navegador ou cancelar o request, o loop e encerrado imediatamente para economizar recursos do PostgreSQL.
-
-6. **Desativacao de Cache HTTP (`Cache-Control: no-cache, no-store`)**:
-   - Respostas do endpoint `/poll` contem headers explicitos para evitar que proxies ou navegadores utilizem respostas em cache.
-
-### 6.6. Decisoes de Testes e Integracao E2E (Fase 6)
-
-1. **Piramide de Testes Completa**:
-   - **Unitarios & Integracao**: Validação individual de cada camada (routers, services, exceptions, schemas) cobrindo caminhos felizes, bordas e cenários de erro (`400`, `404`, `409`, `413`, `422`).
-   - **End-to-End (E2E)**: Simulação do ciclo de vida completo do prontuário veterinário em `tests/test_e2e.py` (cadastro do pet, upload do documento, consulta pré-worker, callback assíncrono, long polling e bloqueio de idempotência).
-
-2. **Alta Cobertura de Codigo (96%+)**:
-   - Aferição rigorosa via `pytest-cov` garantindo que todos os fluxos críticos de negócio e transporte estejam protegidos contra regressões.
-
----
-
-## 7. Decisoes de Arquitetura e Trade-offs
-
-### 7.1. Long Polling vs. WebSockets / Server-Sent Events (SSE)
-
-- **Decisao**: Adocao de Long Polling com timeout configuravel de 25 segundos (`GET /documents/{id}/poll`).
-- **Vantagens**:
-  - Simplicidade operacional e stateless: Utiliza semantica HTTP pura (200 OK para conclusao, 204 No Content para timeout), sem a necessidade de manter conexoes de socket persistentes no cluster.
-  - Compatibilidade com proxies, CDNs e firewalls corporativos que costumam fechar conexoes WebSocket ociosas.
-  - Resiliencia a reconexoes: O cliente HTTP apenas abre uma nova requisicao se receber 204 ou erro de rede.
-- **Trade-offs e Mitigacoes**:
-  - *Overhead no Banco*: Polling periodico a cada 1s foi mitigado com `session.rollback()` antes de cada repouso assincrono, liberando a conexao transacional no PostgreSQL.
-  - *Desconexoes*: Verificacao ativa de `request.is_disconnected` para abortar o loop imediatamente caso o cliente feche a conexao.
-
-### 7.2. DB-Backed Queue vs. Message Broker Externo (RabbitMQ / SQS)
-
-- **Decisao**: Persistencia da fila de processamento na tabela `jobs` do PostgreSQL com estados `ENQUEUED`, `PROCESSING`, `DONE` e `FAILED`.
-- **Vantagens**:
-  - Consistencia Transacional Atomica (ACID): O documento e o job sao criados dentro da mesma transacao no banco, eliminando o problema de *dual-write* (quando o arquivo e salvo mas a mensagem falha ao ir para a fila, ou vice-versa).
-  - Menor complexidade operacional: Nao ha dependencia de infraestrutura adicional para gerenciar e monitorar no estagio inicial.
-- **Trade-offs**:
-  - Em escala massiva (milhoes de jobs concorrentes), a tabela `jobs` requer particionamento ou migracao para um broker dedicado com Dead Letter Queue (DLQ).
-
-### 7.3. Ports & Adapters para Persistencia de Arquivos
-
-- **Decisao**: Criacao da interface abstrata `StorageProvider` desacoplando a gravacao de arquivos da logica de negocio.
-- **Vantagens**:
-  - Flexibilidade total para alternar entre `LocalStorageProvider` (desenvolvimento/testes) e futuros adaptadores como `S3StorageProvider` ou `GCSStorageProvider` apenas alterando a injecao de dependencias.
-  - Testabilidade: Permite o uso de `InMemoryStorageProvider` em suites de testes unitarios de alta velocidade sem I/O real em disco.
-
-### 7.4. Estrategia de Idempotencia no Callback
-
-- **Decisao**: Bloqueio de transicao com retorno explicito de `HTTP 409 Conflict` caso o job ja tenha saido do estado `ENQUEUED`.
-- **Vantagens**:
-  - Preservacao rigorosa da rastreabilidade e auditoria: Impede que workers duplicados sobrescrevam resultados ou alterem timestamps de conclusao (`completed_at`).
-  - Deteccao de anomalias: Facilita alertar sistemas de monitoramento caso workers estejam gerando retentativas redundantes.
-
----
-
-## 8. Escopo Intencionalmente Incompleto
-
-Os seguintes itens foram **deliberadamente deixados fora do escopo inicial** para manter o projeto coeso, focado nos requisitos do desafio e sem complexidade desnecessaria:
-
-1. **Pipeline Real de IA/OCR (Substituido por Callback Simulado)**:
-   - A API foi desenhada para orquestrar e ingerir prontuarios de forma assincrona e resiliente. O processamento pesado por modelos de linguagem (LLM) ou OCR e simulado via endpoint `POST /internal/jobs/{job_id}/complete`, garantindo o desacoplamento total entre a API REST e o worker de IA.
-2. **Autenticacao, Autorizacao e Multi-Tenancy**:
-   - Nao foram implementados tokens JWT, OAuth2 ou isolamento multi-tenant por clinica (`tenant_id`). O foco foi direcionado exclusivamente para a consistencia transacional, cobertura de testes e streaming assincrono.
-3. **Provedor de Object Storage em Nuvem (AWS S3 / Azure Blob)**:
-   - A implementacao padrao utiliza o `LocalStorageProvider` persistindo no volume local (`./storage/uploads`). A camada foi desenhada via *Ports & Adapters*, permitindo plugar um `S3StorageProvider` sem nenhuma alteracao na camada de servico.
-4. **Métricas Prometheus e Rastreamento Distribuído (OpenTelemetry)**:
-   - A observabilidade atual e coberta por logging estruturado e endpoint `/health`. Instrumentacoes como metricas de latencia p99 (`/metrics`) e tracing distribuido (Jaeger/Zipkin) estao preparadas para evolucoes futuras de infraestrutura.
+  - `422 Unprocessable Entity`: ID invalido ou parametro de timeout fora do intervalo permitido.

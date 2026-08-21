@@ -1,5 +1,7 @@
-from fastapi import FastAPI
+import uuid
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from app.routers.documents import router as documents_router
 from app.routers.health import router as health_router
@@ -12,6 +14,20 @@ app = FastAPI(
     description="VetGlobal Asynchronous Document Processing API",
 )
 
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+
+app.add_middleware(RequestIDMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -23,7 +39,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
+    expose_headers=["*", "X-Request-ID"],
 )
 
 app.include_router(health_router)

@@ -11,7 +11,7 @@ from app.models.pet import Pet
 from app.models.document import Document
 from app.models.job import Job
 from app.models.job_status import JobStatus
-from app.services.document_service import upload_document, get_document_with_latest_job, poll_document_status
+from app.services.document_service import DocumentService
 
 
 def _override_session(mock_session):
@@ -666,9 +666,10 @@ async def test_poll_document_invalid_after_job_id_returns_422(invalid_after_job_
 
 
 @pytest.mark.asyncio
-async def test_document_service_helper_functions():
+async def test_document_service_direct_class_methods():
     mock_session = AsyncMock()
     storage = InMemoryStorageProvider()
+    service = DocumentService(session=mock_session, storage=storage)
 
     pet = Pet(name="Hank", owner_name="John")
     pet.id = 1
@@ -688,6 +689,6 @@ async def test_document_service_helper_functions():
     from fastapi import UploadFile
     fake_upload = UploadFile(file=io.BytesIO(b"test content"), filename="test.txt")
 
-    doc, job = await upload_document(session=mock_session, pet_id=1, file=fake_upload, storage=storage)
+    doc, job = await service.upload_document(pet_id=1, file=fake_upload)
     assert doc.pet_id == 1
     assert job.status == JobStatus.ENQUEUED

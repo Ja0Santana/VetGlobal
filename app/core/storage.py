@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import os
+import uuid
 from dataclasses import dataclass
 from typing import Dict, Protocol
 import aiofiles
@@ -42,7 +43,7 @@ class LocalStorageProvider:
         os.makedirs(self.storage_path, exist_ok=True)
 
         sha256_hash = hashlib.sha256()
-        temp_filename = f"_temp_{pet_id}_{filename}"
+        temp_filename = f"_temp_{pet_id}_{uuid.uuid4().hex}_{filename}"
         temp_path = os.path.join(self.storage_path, temp_filename)
         total_bytes = 0
 
