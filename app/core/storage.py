@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import os
 from dataclasses import dataclass
@@ -72,12 +73,16 @@ class LocalStorageProvider:
                 size_bytes=total_bytes,
             )
 
-        except (EmptyFileException, FileSizeExceededException, Exception):
+        except Exception:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
             raise
 
     async def delete_file(self, file_path: str) -> None:
+        await asyncio.to_thread(self._remove_file_if_exists, file_path)
+
+    @staticmethod
+    def _remove_file_if_exists(file_path: str) -> None:
         if os.path.exists(file_path):
             os.remove(file_path)
 
@@ -117,6 +122,7 @@ class InMemoryStorageProvider:
 
     async def delete_file(self, file_path: str) -> None:
         self.files.pop(file_path, None)
+        await asyncio.sleep(0)
 
 
 def get_storage_provider() -> StorageProvider:
