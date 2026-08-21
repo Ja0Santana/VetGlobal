@@ -147,9 +147,13 @@ async def test_complete_already_completed_job_returns_409():
     job.created_at = datetime.now(timezone.utc)
     job.completed_at = datetime.now(timezone.utc)
 
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = job
-    mock_session.execute.return_value = mock_result
+    mock_none_res = MagicMock()
+    mock_none_res.scalar_one_or_none.return_value = None
+
+    mock_job_res = MagicMock()
+    mock_job_res.scalar_one_or_none.return_value = job
+
+    mock_session.execute.side_effect = [mock_none_res, mock_job_res]
 
     _override_session(mock_session)
 
