@@ -22,6 +22,21 @@ def _override_session(mock_session):
     ):
         mock_session.add = MagicMock()
 
+    if mock_session.execute.side_effect is None:
+        def _sync_execute(statement, *args, **kwargs):
+            s = str(statement).lower()
+            if "from jobs" in s or "jobs." in s:
+                current_ret = mock_session.execute.return_value
+                if current_ret is not None and hasattr(current_ret, "scalar_one_or_none"):
+                    val = current_ret.scalar_one_or_none.return_value
+                    if isinstance(val, Document):
+                        job_mock = MagicMock()
+                        job_mock.scalar_one_or_none.return_value = val.jobs[0] if (hasattr(val, "jobs") and val.jobs) else None
+                        return job_mock
+            return mock_session.execute.return_value
+
+        mock_session.execute.side_effect = _sync_execute
+
     async def _override():
         yield mock_session
 
@@ -114,6 +129,8 @@ async def test_complete_e2e_successful_flow():
         mock_doc_result.scalar_one_or_none.return_value = doc
         mock_session.execute.side_effect = None
         mock_session.execute.return_value = mock_doc_result
+        mock_session._smart_wrapped = False
+        _override_session(mock_session)
 
         doc_resp = await client.get("/documents/10")
         assert doc_resp.status_code == 200
@@ -144,7 +161,10 @@ async def test_complete_e2e_successful_flow():
         job.status = JobStatus.DONE
         job.summary = "Patient diagnosed with gastritis, treated with omeprazole."
         job.completed_at = datetime.now(timezone.utc)
+        mock_session.execute.side_effect = None
         mock_session.execute.return_value = mock_doc_result
+        mock_session._smart_wrapped = False
+        _override_session(mock_session)
 
         poll_resp = await client.get("/documents/10/poll")
         assert poll_resp.status_code == 200
@@ -211,7 +231,10 @@ async def test_e2e_failed_job_flow():
 
         mock_doc_result = MagicMock()
         mock_doc_result.scalar_one_or_none.return_value = doc
+        mock_session.execute.side_effect = None
         mock_session.execute.return_value = mock_doc_result
+        mock_session._smart_wrapped = False
+        _override_session(mock_session)
 
         poll_resp = await client.get("/documents/20/poll")
         assert poll_resp.status_code == 200

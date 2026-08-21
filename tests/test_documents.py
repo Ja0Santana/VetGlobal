@@ -17,6 +17,23 @@ from app.services.document_service import DocumentService
 def _override_session(mock_session):
     if not hasattr(mock_session, "expire_all") or isinstance(mock_session.expire_all, AsyncMock):
         mock_session.expire_all = MagicMock()
+    if not hasattr(mock_session, "add") or isinstance(mock_session.add, AsyncMock):
+        mock_session.add = MagicMock()
+
+    if mock_session.execute.side_effect is None:
+        def _sync_execute(statement, *args, **kwargs):
+            s = str(statement).lower()
+            if "from jobs" in s or "jobs." in s:
+                current_ret = mock_session.execute.return_value
+                if current_ret is not None and hasattr(current_ret, "scalar_one_or_none"):
+                    val = current_ret.scalar_one_or_none.return_value
+                    if isinstance(val, Document):
+                        job_mock = MagicMock()
+                        job_mock.scalar_one_or_none.return_value = val.jobs[0] if (hasattr(val, "jobs") and val.jobs) else None
+                        return job_mock
+            return mock_session.execute.return_value
+
+        mock_session.execute.side_effect = _sync_execute
 
     async def _override():
         yield mock_session
@@ -499,13 +516,23 @@ async def test_poll_document_returns_200_when_completed_during_polling():
     job_done.completed_at = datetime.now(timezone.utc)
     doc_done.jobs = [job_done]
 
-    mock_result_1 = MagicMock()
-    mock_result_1.scalar_one_or_none.return_value = doc_enqueued
+    call_poll_count = 0
 
-    mock_result_2 = MagicMock()
-    mock_result_2.scalar_one_or_none.return_value = doc_done
+    def dynamic_poll_exec(statement, *args, **kwargs):
+        nonlocal call_poll_count
+        s = str(statement).lower()
+        res = MagicMock()
+        if "from documents" in s:
+            call_poll_count += 1
+            res.scalar_one_or_none.return_value = doc_enqueued if call_poll_count == 1 else doc_done
+            return res
+        if "from jobs" in s:
+            res.scalar_one_or_none.return_value = job_enqueued if call_poll_count <= 1 else job_done
+            return res
+        res.scalar_one_or_none.return_value = None
+        return res
 
-    mock_session.execute.side_effect = [mock_result_1, mock_result_2]
+    mock_session.execute.side_effect = dynamic_poll_exec
 
     _override_session(mock_session)
 

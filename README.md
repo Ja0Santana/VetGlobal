@@ -89,15 +89,15 @@ API assincrona para ingestao, processamento e sumarizacao de prontuarios e docum
 
 **Racional da Escolha**: Para o fluxo de prontuarios veterinarios (onde o cliente aguarda um unico resultado por documento), o Long Polling oferece a melhor relacao de simplicidade operacional, escalabilidade horizontal e resiliencia.
 
-### 4.2. Fila em Tabela SQL (PostgreSQL) vs. Message Broker Dedicado (RabbitMQ / SQS)
+### 4.2. DB-Backed Job State & Lifecycle Tracking (PostgreSQL) vs. Message Broker Dedicado (RabbitMQ / SQS)
 
-| Criterio | Fila em Tabela `jobs` (Adotada) | Message Broker Dedicado |
+| Criterio | DB-Backed Job State (Adotado) | Message Broker Dedicado |
 | :--- | :--- | :--- |
-| **Atomicidade (Dual-Write)** | Garantida via ACID: O documento e o job sao salvos na mesma transacao. | Risco de escrita dupla: O arquivo pode ser salvo e a mensagem falhar ao ir para a fila (ou vice-versa). |
-| **Complexidade Operacional** | Zero infraestrutura adicional no estagio inicial. | Exige deploy, monitoramento, clustering e DLQs dedicadas. |
-| **Escalabilidade Extrema** | Adequada para milhares de jobs/minuto (com indices em status e created_at). | Necessaria para milhoes de mensagens por segundo. |
+| **Atomicidade (Dual-Write)** | Garantida via ACID: O documento e o estado inicial do job (`ENQUEUED`) sao persistidos na mesma transacao. | Risco de escrita dupla: O arquivo pode ser salvo e a mensagem falhar ao ir para a fila (ou vice-versa). |
+| **Complexidade Operacional** | Zero infraestrutura adicional no estagio inicial; rastreabilidade e auditoria nativas na tabela `jobs`. | Exige deploy, monitoramento, clustering, gerenciamento de DLQs e esquemas de serializacao. |
+| **Escalabilidade & Orquestracao** | Adequada para o modelo de callback HTTP (`/internal/jobs/{id}/complete`) sem manter consumidores ociosos. | Necessaria para alto throughput de streaming com centenas de workers em loop continuo. |
 
-**Racional da Escolha**: Eliminar falhas de *dual-write* no estagio inicial, mantendo o sistema simples e robusto com transacoes ACID no PostgreSQL.
+**Racional da Escolha**: A tabela `jobs` atua como repositório transacional de ciclo de vida e auditoria de estado (*DB-backed Job State & Audit Tracker*), orquestrado de forma desacoplada via endpoint de callback do worker. Isso elimina falhas de *dual-write* e mantem a arquitetura enxuta e defensavel sem adicionar a sobrecarga operacional de um broker externo nesta fase.
 
 ### 4.3. Storage Local em Disco vs. Cloud Object Storage (AWS S3 / Azure Blob)
 
