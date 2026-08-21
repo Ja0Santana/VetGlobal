@@ -425,7 +425,7 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 
 ---
 
-## 7. Decisoes de Arquitetura e Trade-offs (Design Decisions & Trade-offs)
+## 7. Decisoes de Arquitetura e Trade-offs
 
 ### 7.1. Long Polling vs. WebSockets / Server-Sent Events (SSE)
 
@@ -463,7 +463,7 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 
 ---
 
-## 8. Escopo Intencionalmente Incompleto (Intentionally Incomplete / Future Scope)
+## 8. Escopo Intencionalmente Incompleto
 
 Os seguintes itens foram **deliberadamente deixados fora do escopo inicial** para manter o projeto coeso, focado nos requisitos do desafio e sem complexidade desnecessaria:
 
@@ -475,20 +475,3 @@ Os seguintes itens foram **deliberadamente deixados fora do escopo inicial** par
    - A implementacao padrao utiliza o `LocalStorageProvider` persistindo no volume local (`./storage/uploads`). A camada foi desenhada via *Ports & Adapters*, permitindo plugar um `S3StorageProvider` sem nenhuma alteracao na camada de servico.
 4. **Métricas Prometheus e Rastreamento Distribuído (OpenTelemetry)**:
    - A observabilidade atual e coberta por logging estruturado e endpoint `/health`. Instrumentacoes como metricas de latencia p99 (`/metrics`) e tracing distribuido (Jaeger/Zipkin) estao preparadas para evolucoes futuras de infraestrutura.
-
----
-
-## 9. Status do Projeto e Conformidade com os Requisitos
-
-| Requisito do Desafio | Endpoint / Componente | Status | Detalhes da Implementacao |
-| :--- | :--- | :---: | :--- |
-| **Requisito 1: Create Pet** | `POST /pets` | Concluido | Retorna 201 Created, sanitiza strings e rejeita espacos em branco (422). |
-| **Requisito 2: Get Pet** | `GET /pets/{pet_id}` | Concluido | Retorna 200 OK ou 404 Not Found caso inexistente. |
-| **Requisito 3: Upload Document** | `POST /pets/{pet_id}/documents` | Concluido | Streaming SHA-256, deduplicacao (409), limite de 20MB (413), sanitizacao de path traversal. |
-| **Requisito 4: Worker Callback** | `POST /internal/jobs/{job_id}/complete` | Concluido | Discriminated union DTOs, idempotencia garantida (409), metricas de execucao. |
-| **Requisito 5: Poll Status** | `GET /documents/{document_id}/poll?after_job_id=0` | Concluido | Long polling assincrono (25s), filtro after_job_id, 200 OK em conclusao, 204 No Content em timeout. |
-| **Consulta de Documento** | `GET /documents/{document_id}` | Concluido | Retorna metadados e status do ultimo job vinculado com eager loading. |
-| **Healthcheck** | `GET /health` | Concluido | Valida conexao ativa com PostgreSQL (`SELECT 1`). |
-| **Banco de Dados & Migracoes** | PostgreSQL 16 + Alembic | Concluido | Migracoes versionadas assincronas e integridade referencial. |
-| **Containerizacao & CI** | Docker + GitHub Actions | Concluido | `docker-compose.yml`, `entrypoint.sh` automatizado e pipeline de CI no GitHub. |
-| **Qualidade & Testes** | `pytest` + `pytest-cov` | Concluido | 68 testes automatizados aprovados com 96% de cobertura de codigo. |
