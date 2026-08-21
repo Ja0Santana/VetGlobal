@@ -32,3 +32,5 @@ storage/uploads/*
 skills/
 coverage.xml
 .scannerwork/
+skills-lock.json
+.agents/
