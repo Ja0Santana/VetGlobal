@@ -140,6 +140,10 @@ async def test_complete_e2e_successful_flow():
         assert doc_data["latest_job"]["summary"] is None
 
         # Step 5: Worker Completes Job (Simulate Worker Callback)
+        job.status = JobStatus.DONE
+        job.summary = "Patient diagnosed with gastritis, treated with omeprazole."
+        job.completed_at = datetime.now(timezone.utc)
+
         mock_job_result = MagicMock()
         mock_job_result.scalar_one_or_none.return_value = job
         mock_session.execute.return_value = mock_job_result
@@ -158,9 +162,6 @@ async def test_complete_e2e_successful_flow():
         assert callback_data["status"] == "DONE"
 
         # Step 6: Long Polling returns 200 OK with Completed Summary
-        job.status = JobStatus.DONE
-        job.summary = "Patient diagnosed with gastritis, treated with omeprazole."
-        job.completed_at = datetime.now(timezone.utc)
         mock_session.execute.side_effect = None
         mock_session.execute.return_value = mock_doc_result
         mock_session._smart_wrapped = False
@@ -215,6 +216,10 @@ async def test_e2e_failed_job_flow():
         base_url="http://test",
     ) as client:
         # Step 1: Worker Callback Reports Failure
+        job.status = JobStatus.FAILED
+        job.error_message = "OCR extraction failed: corrupted PDF stream."
+        job.completed_at = datetime.now(timezone.utc)
+
         mock_job_result = MagicMock()
         mock_job_result.scalar_one_or_none.return_value = job
         mock_session.execute.return_value = mock_job_result
@@ -230,10 +235,6 @@ async def test_e2e_failed_job_flow():
         assert callback_resp.json()["status"] == "FAILED"
 
         # Step 2: Long Polling delivers the Failure message to the client
-        job.status = JobStatus.FAILED
-        job.error_message = "OCR extraction failed: corrupted PDF stream."
-        job.completed_at = datetime.now(timezone.utc)
-
         mock_doc_result = MagicMock()
         mock_doc_result.scalar_one_or_none.return_value = doc
         mock_session.execute.side_effect = None

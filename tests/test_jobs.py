@@ -26,9 +26,16 @@ def _clear_overrides():
 async def test_complete_job_done_returns_200():
     mock_session = AsyncMock()
 
-    job = Job(document_id=1, status=JobStatus.ENQUEUED)
+    now = datetime.now(timezone.utc)
+    job = Job(
+        document_id=1,
+        status=JobStatus.DONE,
+        summary="Patient has a history of intermittent vomiting.",
+        created_at=now,
+        started_at=now,
+        completed_at=now,
+    )
     job.id = 55
-    job.created_at = datetime.now(timezone.utc)
 
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = job
@@ -72,9 +79,16 @@ async def test_complete_job_done_returns_200():
 async def test_complete_job_failed_returns_200():
     mock_session = AsyncMock()
 
-    job = Job(document_id=1, status=JobStatus.ENQUEUED)
+    now = datetime.now(timezone.utc)
+    job = Job(
+        document_id=1,
+        status=JobStatus.FAILED,
+        error_message="Could not parse document",
+        created_at=now,
+        started_at=now,
+        completed_at=now,
+    )
     job.id = 56
-    job.created_at = datetime.now(timezone.utc)
 
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = job

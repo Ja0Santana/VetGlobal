@@ -44,17 +44,7 @@ async def complete_job(
         if existing_job is None:
             raise JobNotFoundException(job_id)
 
-        current_status = getattr(
-            existing_job.status, "value", str(existing_job.status)
-        )
-        raise JobAlreadyCompletedException(job_id, current_status)
-
-    updated_job.status = payload.status
-    updated_job.summary = summary_value
-    updated_job.error_message = error_value
-    if updated_job.started_at is None:
-        updated_job.started_at = updated_job.created_at or now
-    updated_job.completed_at = now
+        raise JobAlreadyCompletedException(job_id, existing_job.status_value)
 
     await session.commit()
     return updated_job

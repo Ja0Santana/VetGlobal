@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import time
 from pathlib import Path
@@ -6,7 +7,7 @@ from typing import Any, Callable, Coroutine, Optional, Tuple
 
 from fastapi import Depends, UploadFile
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_session
@@ -22,7 +23,11 @@ from app.models.job import Job
 from app.models.job_status import JobStatus
 from app.services.pet_service import get_pet_by_id
 
+logger = logging.getLogger(__name__)
+
 ALLOWED_EXTENSIONS = [".txt", ".pdf"]
+
+DisconnectChecker = Callable[[], Coroutine[Any, Any, bool]]
 
 
 def _sanitize_and_validate_filename(raw_filename: str | None) -> str:
@@ -47,12 +52,11 @@ def _get_current_time() -> float:
 def _is_job_finished(latest_job: Optional[Job], after_job_id: int) -> bool:
     if latest_job is None or latest_job.id <= after_job_id:
         return False
-    status_value = getattr(latest_job.status, "value", str(latest_job.status))
-    return status_value in (JobStatus.DONE.value, JobStatus.FAILED.value)
+    return latest_job.status_value in (JobStatus.DONE.value, JobStatus.FAILED.value)
 
 
 async def _has_client_disconnected(
-    is_disconnected_callable: Optional[Callable[[], Coroutine[Any, Any, bool]]]
+    is_disconnected_callable: Optional[DisconnectChecker]
 ) -> bool:
     if is_disconnected_callable is None:
         return False
@@ -136,8 +140,8 @@ class DocumentService:
     async def _safely_rollback_session(self) -> None:
         try:
             await self.session.rollback()
-        except Exception:
-            pass
+        except SQLAlchemyError as error:
+            logger.warning("Database session rollback failed during polling: %s", error)
 
     async def poll_document_status(
         self,
@@ -145,7 +149,7 @@ class DocumentService:
         after_job_id: int = 0,
         timeout_seconds: float = 25.0,
         poll_interval_seconds: float = 1.0,
-        is_disconnected_callable: Optional[Callable[[], Coroutine[Any, Any, bool]]] = None,
+        is_disconnected_callable: Optional[DisconnectChecker] = None,
     ) -> Tuple[Optional[Document], Optional[Job]]:
         start_time = _get_current_time()
 
