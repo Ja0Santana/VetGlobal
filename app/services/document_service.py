@@ -6,6 +6,7 @@ from typing import Any, Callable, Coroutine, Optional, Tuple
 
 from fastapi import Depends, UploadFile
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -97,40 +98,49 @@ class DocumentService:
 
         try:
             await self.session.flush()
+            job = Job(document_id=document.id, status=JobStatus.ENQUEUED)
+            self.session.add(job)
+            await self.session.commit()
+            await self.session.refresh(document)
+            await self.session.refresh(job)
+            return document, job
+        except IntegrityError:
+            await self.session.rollback()
+            await self.storage.delete_file(stored_file.file_path)
+            raise DuplicateDocumentException(pet_id, stored_file.file_hash)
         except Exception:
+            await self.session.rollback()
             await self.storage.delete_file(stored_file.file_path)
             raise
-
-        job = Job(document_id=document.id, status=JobStatus.ENQUEUED)
-        self.session.add(job)
-
-        await self.session.commit()
-        await self.session.refresh(document)
-        await self.session.refresh(job)
-
-        return document, job
 
     async def get_document_with_latest_job(
         self, document_id: int
     ) -> Tuple[Optional[Document], Optional[Job]]:
-        query = (
+        document_query = (
             select(Document)
             .options(selectinload(Document.jobs))
             .where(Document.id == document_id)
         )
-        result = await self.session.execute(query)
-        document = result.scalar_one_or_none()
+        document_result = await self.session.execute(document_query)
+        document = document_result.scalar_one_or_none()
 
         if document is None:
             return None, None
 
-        latest_job = None
-        if document.jobs:
-            latest_job = sorted(
-                document.jobs,
-                key=lambda item: item.created_at,
-                reverse=True,
-            )[0]
+        if hasattr(document, "jobs") and document.jobs is not None:
+            if len(document.jobs) > 0:
+                latest_job = max(document.jobs, key=lambda item: (item.created_at, item.id))
+                return document, latest_job
+            return document, None
+
+        job_query = (
+            select(Job)
+            .where(Job.document_id == document_id)
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+        )
+        job_result = await self.session.execute(job_query)
+        latest_job = job_result.scalar_one_or_none()
 
         return document, latest_job
 
@@ -178,39 +188,3 @@ def get_document_service(
     storage: StorageProvider = Depends(get_storage_provider),
 ) -> DocumentService:
     return DocumentService(session=session, storage=storage)
-
-
-async def upload_document(
-    session: AsyncSession,
-    pet_id: int,
-    file: UploadFile,
-    storage: Optional[StorageProvider] = None,
-) -> Tuple[Document, Job]:
-    resolved_storage = storage or get_storage_provider()
-    service = DocumentService(session=session, storage=resolved_storage)
-    return await service.upload_document(pet_id=pet_id, file=file)
-
-
-async def get_document_with_latest_job(
-    session: AsyncSession, document_id: int
-) -> Tuple[Optional[Document], Optional[Job]]:
-    service = DocumentService(session=session, storage=get_storage_provider())
-    return await service.get_document_with_latest_job(document_id=document_id)
-
-
-async def poll_document_status(
-    session: AsyncSession,
-    document_id: int,
-    after_job_id: int = 0,
-    timeout_seconds: float = 25.0,
-    poll_interval_seconds: float = 1.0,
-    is_disconnected_callable: Optional[Callable[[], Coroutine[Any, Any, bool]]] = None,
-) -> Tuple[Optional[Document], Optional[Job]]:
-    service = DocumentService(session=session, storage=get_storage_provider())
-    return await service.poll_document_status(
-        document_id=document_id,
-        after_job_id=after_job_id,
-        timeout_seconds=timeout_seconds,
-        poll_interval_seconds=poll_interval_seconds,
-        is_disconnected_callable=is_disconnected_callable,
-    )
