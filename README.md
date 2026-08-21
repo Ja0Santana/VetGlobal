@@ -81,23 +81,27 @@ VetGlobal/
 ## 3. Instrucoes de Execucao
 
 ### 3.1. Pre-requisitos
+
 - Docker e Docker Compose instalados, OU
 - Python 3.11+ e PostgreSQL 16 configurados localmente.
 
 ### 3.2. Execucao via Docker Compose (Recomendado)
 
 1. Clonar o repositorio:
+
    ```bash
    git clone https://github.com/Ja0Santana/VetGlobal.git
    cd VetGlobal
    ```
 
 2. Configurar o arquivo de ambiente:
+
    ```bash
    cp .env.example .env
    ```
 
 3. Subir os containers da aplicacao e do banco:
+
    ```bash
    docker-compose up --build
    ```
@@ -110,6 +114,7 @@ VetGlobal/
 ### 3.3. Execucao Local (Ambiente de Desenvolvimento)
 
 1. Criar e ativar o ambiente virtual:
+
    ```bash
    python -m venv .venv
    # Windows:
@@ -119,22 +124,26 @@ VetGlobal/
    ```
 
 2. Instalar as dependencias:
+
    ```bash
    pip install -r requirements.txt
    ```
 
 3. Configurar as variaveis de ambiente no arquivo `.env`:
+
    ```text
    DATABASE_URL=postgresql+asyncpg://vetglobal:vetglobal@localhost:5432/vetglobal
    STORAGE_PATH=./storage/uploads
    ```
 
 4. Executar as migracoes do banco de dados:
+
    ```bash
    alembic upgrade head
    ```
 
 5. Iniciar o servidor Uvicorn com hot-reload:
+
    ```bash
    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
    ```
@@ -158,27 +167,34 @@ pytest -v --cov=app --cov-report=term-missing
 ## 5. Endpoints Implementados
 
 ### `GET /health`
+
 Verifica a saude da aplicacao e a conectividade com o PostgreSQL executando `SELECT 1`.
 
 - **Resposta (`200 OK`)**:
+
   ```json
   {
     "status": "healthy"
   }
   ```
+
 - **Resposta (`503 Service Unavailable`)**: Falha na conexao com o banco de dados.
 
 ### `POST /pets`
+
 Cadastra um novo pet no sistema.
 
 - **Request Body**:
+
   ```json
   {
     "name": "Hank",
     "owner_name": "John Bergeson"
   }
   ```
+
 - **Resposta (`201 Created`)**:
+
   ```json
   {
     "id": 1,
@@ -189,16 +205,19 @@ Cadastra um novo pet no sistema.
   ```
 
 ### `GET /pets/{pet_id}`
+
 Consulta os dados de um pet por ID.
 
 - **Resposta (`200 OK`)**: Retorna os dados do pet.
 - **Resposta (`404 Not Found`)**: Pet nao encontrado.
 
 ### `POST /pets/{pet_id}/documents`
+
 Upload de documento (`.txt` ou `.pdf`) vinculado a um pet. Calcula hash SHA-256 em streaming, persiste o arquivo no disco e enfileira um job assincrono de sumarizacao.
 
 - **Form-Data**: `file` (Multipart file)
 - **Resposta (`202 Accepted`)**:
+
   ```json
   {
     "document_id": 10,
@@ -206,6 +225,7 @@ Upload de documento (`.txt` ou `.pdf`) vinculado a um pet. Calcula hash SHA-256 
     "status": "ENQUEUED"
   }
   ```
+
 - **Codigos de Erro**:
   - `400 Bad Request`: Extensao invalida ou arquivo vazio.
   - `404 Not Found`: Pet nao encontrado.
@@ -213,23 +233,29 @@ Upload de documento (`.txt` ou `.pdf`) vinculado a um pet. Calcula hash SHA-256 
   - `413 Content Too Large`: Tamanho do arquivo excede o limite de 20MB.
 
 ### `POST /internal/jobs/{job_id}/complete`
+
 Endpoint interno para simular o callback de conclusao de um worker de sumarizacao.
 
 - **Request Body (Sucesso)**:
+
   ```json
   {
     "status": "DONE",
     "summary": "Patient has a history of intermittent vomiting."
   }
   ```
+
 - **Request Body (Falha)**:
+
   ```json
   {
     "status": "FAILED",
     "error": "Could not parse document"
   }
   ```
+
 - **Resposta (`200 OK`)**:
+
   ```json
   {
     "job_id": 55,
@@ -238,15 +264,18 @@ Endpoint interno para simular o callback de conclusao de um worker de sumarizaca
     "completed_at": "2026-08-18T20:01:00Z"
   }
   ```
+
 - **Codigos de Erro**:
   - `404 Not Found`: Job nao encontrado.
   - `409 Conflict`: Job ja foi finalizado anteriormente (idempotencia).
   - `422 Unprocessable Entity`: Status invalido, summary ausente para status DONE ou error ausente para status FAILED.
 
 ### `GET /documents/{document_id}`
+
 Consulta os metadados do documento e as informacoes do job mais recente associado.
 
 - **Resposta (`200 OK`)**:
+
   ```json
   {
     "id": 10,
@@ -262,14 +291,18 @@ Consulta os metadados do documento e as informacoes do job mais recente associad
     }
   }
   ```
+
 ### `GET /documents/{document_id}/poll`
+
 Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos aguardando o processamento assincrono do documento.
 
 - **Query Parameters (Opcionais)**:
   - `after_job_id` (int, default: `0`, min: `0`): Filtra apenas jobs com ID estritamente maior que o valor informado.
   - `timeout` (float, default: `25.0`, min: `1.0`, max: `25.0`): Tempo maximo de espera em segundos.
 - **Resposta quando Concluido (`200 OK`)**:
+
   ```json
+
   {
     "id": 10,
     "pet_id": 1,
@@ -284,6 +317,7 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
     }
   }
   ```
+
 - **Resposta em Timeout (`204 No Content`)**:
   - Retornado quando o timeout de 25 segundos expira e o documento ainda se encontra em processamento (`ENQUEUED`) ou nenhum novo job maior que `after_job_id` foi concluido, indicando ao cliente para realizar um novo poll sem erro de conexao.
 - **Codigos de Erro**:
@@ -295,6 +329,7 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 ## 6. Modelagem de Dominio e Decisoes de Banco (Fase 2)
 
 ### 6.1. Modelos Implementados
+
 - **`Pet` (`pets`)**: Cadastro basico do animal (`name`, `owner_name`, `created_at`).
 - **`Document` (`documents`)**: Metadados do arquivo anexado (`pet_id`, `filename`, `file_path`, `file_hash`, `created_at`).
 - **`Job` (`jobs`)**: Rastreabilidade do processamento assincrono (`document_id`, `status`, `summary`, `error_message`, `created_at`, `started_at`, `completed_at`, `updated_at`).
@@ -390,7 +425,60 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 
 ---
 
-## 7. Status do Projeto e Conformidade com os Requisitos
+## 7. Decisoes de Arquitetura e Trade-offs (Design Decisions & Trade-offs)
+
+### 7.1. Long Polling vs. WebSockets / Server-Sent Events (SSE)
+
+- **Decisao**: Adocao de Long Polling com timeout configuravel de 25 segundos (`GET /documents/{id}/poll`).
+- **Vantagens**:
+  - Simplicidade operacional e stateless: Utiliza semantica HTTP pura (200 OK para conclusao, 204 No Content para timeout), sem a necessidade de manter conexoes de socket persistentes no cluster.
+  - Compatibilidade com proxies, CDNs e firewalls corporativos que costumam fechar conexoes WebSocket ociosas.
+  - Resiliencia a reconexoes: O cliente HTTP apenas abre uma nova requisicao se receber 204 ou erro de rede.
+- **Trade-offs e Mitigacoes**:
+  - *Overhead no Banco*: Polling periodico a cada 1s foi mitigado com `session.rollback()` antes de cada repouso assincrono, liberando a conexao transacional no PostgreSQL.
+  - *Desconexoes*: Verificacao ativa de `request.is_disconnected` para abortar o loop imediatamente caso o cliente feche a conexao.
+
+### 7.2. DB-Backed Queue vs. Message Broker Externo (RabbitMQ / SQS)
+
+- **Decisao**: Persistencia da fila de processamento na tabela `jobs` do PostgreSQL com estados `ENQUEUED`, `PROCESSING`, `DONE` e `FAILED`.
+- **Vantagens**:
+  - Consistencia Transacional Atomica (ACID): O documento e o job sao criados dentro da mesma transacao no banco, eliminando o problema de *dual-write* (quando o arquivo e salvo mas a mensagem falha ao ir para a fila, ou vice-versa).
+  - Menor complexidade operacional: Nao ha dependencia de infraestrutura adicional para gerenciar e monitorar no estagio inicial.
+- **Trade-offs**:
+  - Em escala massiva (milhoes de jobs concorrentes), a tabela `jobs` requer particionamento ou migracao para um broker dedicado com Dead Letter Queue (DLQ).
+
+### 7.3. Ports & Adapters para Persistencia de Arquivos
+
+- **Decisao**: Criacao da interface abstrata `StorageProvider` desacoplando a gravacao de arquivos da logica de negocio.
+- **Vantagens**:
+  - Flexibilidade total para alternar entre `LocalStorageProvider` (desenvolvimento/testes) e futuros adaptadores como `S3StorageProvider` ou `GCSStorageProvider` apenas alterando a injecao de dependencias.
+  - Testabilidade: Permite o uso de `InMemoryStorageProvider` em suites de testes unitarios de alta velocidade sem I/O real em disco.
+
+### 7.4. Estrategia de Idempotencia no Callback
+
+- **Decisao**: Bloqueio de transicao com retorno explicito de `HTTP 409 Conflict` caso o job ja tenha saido do estado `ENQUEUED`.
+- **Vantagens**:
+  - Preservacao rigorosa da rastreabilidade e auditoria: Impede que workers duplicados sobrescrevam resultados ou alterem timestamps de conclusao (`completed_at`).
+  - Deteccao de anomalias: Facilita alertar sistemas de monitoramento caso workers estejam gerando retentativas redundantes.
+
+---
+
+## 8. Escopo Intencionalmente Incompleto (Intentionally Incomplete / Future Scope)
+
+Os seguintes itens foram **deliberadamente deixados fora do escopo inicial** para manter o projeto coeso, focado nos requisitos do desafio e sem complexidade desnecessaria:
+
+1. **Pipeline Real de IA/OCR (Substituido por Callback Simulado)**:
+   - A API foi desenhada para orquestrar e ingerir prontuarios de forma assincrona e resiliente. O processamento pesado por modelos de linguagem (LLM) ou OCR e simulado via endpoint `POST /internal/jobs/{job_id}/complete`, garantindo o desacoplamento total entre a API REST e o worker de IA.
+2. **Autenticacao, Autorizacao e Multi-Tenancy**:
+   - Nao foram implementados tokens JWT, OAuth2 ou isolamento multi-tenant por clinica (`tenant_id`). O foco foi direcionado exclusivamente para a consistencia transacional, cobertura de testes e streaming assincrono.
+3. **Provedor de Object Storage em Nuvem (AWS S3 / Azure Blob)**:
+   - A implementacao padrao utiliza o `LocalStorageProvider` persistindo no volume local (`./storage/uploads`). A camada foi desenhada via *Ports & Adapters*, permitindo plugar um `S3StorageProvider` sem nenhuma alteracao na camada de servico.
+4. **Métricas Prometheus e Rastreamento Distribuído (OpenTelemetry)**:
+   - A observabilidade atual e coberta por logging estruturado e endpoint `/health`. Instrumentacoes como metricas de latencia p99 (`/metrics`) e tracing distribuido (Jaeger/Zipkin) estao preparadas para evolucoes futuras de infraestrutura.
+
+---
+
+## 9. Status do Projeto e Conformidade com os Requisitos
 
 | Requisito do Desafio | Endpoint / Componente | Status | Detalhes da Implementacao |
 | :--- | :--- | :---: | :--- |
