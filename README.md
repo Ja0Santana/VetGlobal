@@ -27,7 +27,8 @@ VetGlobal/
 │   ├── core/
 │   │   ├── config.py             # Configuracoes da aplicacao com pydantic-settings
 │   │   ├── database.py           # Engine assincrono, session maker e DeclarativeBase
-│   │   └── exceptions.py         # Excecoes de dominio desacopladas do transporte HTTP
+│   │   ├── exceptions.py         # Excecoes de dominio desacopladas do transporte HTTP
+│   │   └── storage.py            # Ports & Adapters: StorageProvider (Local & In-Memory)
 │   ├── models/
 │   │   ├── __init__.py           # Exportacao centralizada dos modelos e Base
 │   │   ├── document.py           # Modelo Document com constraint de hash unico
@@ -45,7 +46,7 @@ VetGlobal/
 │   │   ├── job.py                # Schemas de callback do worker e conclusao
 │   │   └── pet.py                # Schemas de entrada e saida de Pet
 │   ├── services/
-│   │   ├── document_service.py   # Logica de ingestao, hashing e consulta
+│   │   ├── document_service.py   # Logica de ingestao, hashing e consulta (DocumentService)
 │   │   ├── job_service.py        # Logica de conclusao e idempotencia de jobs
 │   │   └── pet_service.py        # Logica de criacao e consulta de pets
 │   └── main.py                   # Ponto de entrada da aplicacao FastAPI
@@ -62,7 +63,8 @@ VetGlobal/
 │   ├── test_e2e.py               # Testes de integracao End-to-End do fluxo completo
 │   ├── test_health.py            # Testes do endpoint de healthcheck
 │   ├── test_jobs.py              # Testes do callback do worker (DONE/FAILED/409)
-│   └── test_pets.py              # Testes de CRUD de pets (201, 200, 404, 422)
+│   ├── test_pets.py              # Testes de CRUD de pets (201, 200, 404, 422)
+│   └── test_storage.py           # Testes unitarios de LocalStorageProvider e InMemoryStorageProvider
 ├── .env.example                  # Variaveis de ambiente de referencia
 ├── alembic.ini                   # Configuracao principal do Alembic
 ├── Dockerfile                    # Build da imagem da aplicacao
@@ -319,18 +321,23 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 6. **Migracoes Versionadas com Alembic**:
    - Criacao do script `0001_initial_schema.py` com suporte a execucao assincrona via `migrations/env.py`.
 
-### 6.3. Decisoes de Ingestao (Fase 3)
+### 6.3. Decisoes de Ingestao e Inversao de Dependencias (Fase 3)
 
-1. **Excecoes de Dominio Desacopladas do HTTP**:
+1. **Inversao de Dependencias no Storage (Ports & Adapters)**:
+   - Abstracao da persistencia de arquivos atraves da interface `StorageProvider` (`app/core/storage.py`) e DTO imutavel `StoredFile`.
+   - Implementacoes intercambiaveis de `LocalStorageProvider` (para producao/desenvolvimento) e `InMemoryStorageProvider` (para testes unitarios sem I/O de disco).
+   - Injecao desacoplada no FastAPI via fabrica `get_document_service` unificando a sessao do banco de dados e o provedor de storage.
+
+2. **Excecoes de Dominio Desacopladas do HTTP**:
    - Services lancam excecoes semanticas (`PetNotFoundException`, `DuplicateDocumentException`, `InvalidFileExtensionException`, `EmptyFileException`) definidas em `app/core/exceptions.py`. Os routers traduzem para HTTP status codes, mantendo a camada de negocio independente do transporte.
 
-2. **Hashing SHA-256 em Streaming**:
-   - O arquivo e lido em chunks de 64KB, calculando o hash simultaneamente a gravacao no disco. Memoria constante independente do tamanho do arquivo.
+3. **Hashing SHA-256 em Streaming**:
+   - O arquivo e lido em chunks de 64KB, calculando o hash simultaneamente a gravacao no storage. Memoria constante independente do tamanho do arquivo.
 
-3. **Limpeza de Arquivos Orfaos**:
-   - Se a transacao de banco falhar apos a gravacao do arquivo no disco, o arquivo e removido automaticamente antes de propagar a excecao. Evita acumulo de lixo no storage.
+4. **Limpeza de Arquivos Orfaos**:
+   - Se a transacao de banco falhar apos a gravacao do arquivo no storage, o metodo `storage.delete_file` e acionado automaticamente antes de propagar a excecao. Evita acumulo de lixo no storage.
 
-4. **Sanitizacao e Validacao Estrita de Entradas**:
+5. **Sanitizacao e Validacao Estrita de Entradas**:
    - Sanitizacao automatica com `.strip()` para campos de texto (`name`, `owner_name`) rejeitando strings vazias ou compostas apenas por espacos (`422 Unprocessable Entity`).
    - Validacao de parametros de rota (`pet_id`, `document_id`) com restricao de inteiros positivos (`ge=1`).
    - Protecao contra Path Traversal no upload de documentos via `os.path.basename` e limite maximo de tamanho de arquivo de 20MB (`413 Content Too Large`).
@@ -396,7 +403,4 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 | **Healthcheck** | `GET /health` | Concluido | Valida conexao ativa com PostgreSQL (`SELECT 1`). |
 | **Banco de Dados & Migracoes** | PostgreSQL 16 + Alembic | Concluido | Migracoes versionadas assincronas e integridade referencial. |
 | **Containerizacao & CI** | Docker + GitHub Actions | Concluido | `docker-compose.yml`, `entrypoint.sh` automatizado e pipeline de CI no GitHub. |
-| **Qualidade & Testes** | `pytest` + `pytest-cov` | Concluido | 60 testes automatizados aprovados com 96% de cobertura de codigo. |
-
-
-
+| **Qualidade & Testes** | `pytest` + `pytest-cov` | Concluido | 68 testes automatizados aprovados com 96% de cobertura de codigo. |
