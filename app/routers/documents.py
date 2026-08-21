@@ -3,6 +3,7 @@ from typing import Optional
 from fastapi import (
     APIRouter,
     Depends,
+    File,
     HTTPException,
     Path,
     Query,
@@ -11,9 +12,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_async_session
 from app.core.exceptions import (
     DocumentNotFoundException,
     DuplicateDocumentException,
@@ -27,7 +26,7 @@ from app.schemas.document import (
     DocumentUploadResponse,
     JobSummaryResponse,
 )
-from app.services import document_service
+from app.services.document_service import DocumentService, get_document_service
 
 router = APIRouter(tags=["documents"])
 
@@ -40,12 +39,12 @@ router = APIRouter(tags=["documents"])
 )
 async def upload_document(
     pet_id: int = Path(..., ge=1, description="Positive integer ID"),
-    file: UploadFile = ...,
-    session: AsyncSession = Depends(get_async_session),
+    file: UploadFile = File(...),
+    service: DocumentService = Depends(get_document_service),
 ) -> DocumentUploadResponse:
     try:
-        document, job = await document_service.upload_document(
-            session, pet_id, file
+        document, job = await service.upload_document(
+            pet_id=pet_id, file=file
         )
     except PetNotFoundException as error:
         raise HTTPException(
@@ -83,10 +82,10 @@ async def upload_document(
 )
 async def get_document(
     document_id: int = Path(..., ge=1, description="Positive integer Document ID"),
-    session: AsyncSession = Depends(get_async_session),
+    service: DocumentService = Depends(get_document_service),
 ) -> DocumentDetailResponse:
-    document, latest_job = await document_service.get_document_with_latest_job(
-        session, document_id
+    document, latest_job = await service.get_document_with_latest_job(
+        document_id=document_id
     )
     if document is None:
         raise HTTPException(
@@ -144,12 +143,11 @@ async def poll_document(
         le=25.0,
         description="Long-polling timeout in seconds (maximum: 25.0s)",
     ),
-    session: AsyncSession = Depends(get_async_session),
+    service: DocumentService = Depends(get_document_service),
 ):
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     try:
-        document, latest_job = await document_service.poll_document_status(
-            session=session,
+        document, latest_job = await service.poll_document_status(
             document_id=document_id,
             after_job_id=after_job_id,
             timeout_seconds=timeout,

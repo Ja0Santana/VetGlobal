@@ -1,5 +1,4 @@
 import io
-import os
 import pytest
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -7,10 +6,12 @@ from datetime import datetime, timezone
 
 from app.main import app
 from app.core.database import get_async_session
+from app.core.storage import get_storage_provider, InMemoryStorageProvider
 from app.models.pet import Pet
 from app.models.document import Document
 from app.models.job import Job
 from app.models.job_status import JobStatus
+from app.services.document_service import upload_document, get_document_with_latest_job, poll_document_status
 
 
 def _override_session(mock_session):
@@ -23,7 +24,8 @@ def _override_session(mock_session):
 
 
 @pytest.fixture(autouse=True)
-def _clear_overrides():
+def _setup_and_clear_overrides():
+    app.dependency_overrides[get_storage_provider] = lambda: InMemoryStorageProvider()
     yield
     app.dependency_overrides.clear()
 
@@ -71,23 +73,14 @@ async def test_upload_document_returns_202():
 
     file_content = b"Patient Hank has a history of intermittent vomiting."
 
-    with patch("app.services.document_service.aiofiles") as mock_aiofiles:
-        mock_file_ctx = AsyncMock()
-        mock_file_ctx.write = AsyncMock()
-        mock_aiofiles.open.return_value.__aenter__ = AsyncMock(
-            return_value=mock_file_ctx
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/pets/1/documents",
+            files={"file": ("prontuario.txt", io.BytesIO(file_content), "text/plain")},
         )
-        mock_aiofiles.open.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("os.makedirs"), patch("os.replace"), patch("os.path.exists", return_value=False):
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                response = await client.post(
-                    "/pets/1/documents",
-                    files={"file": ("prontuario.txt", io.BytesIO(file_content), "text/plain")},
-                )
 
     assert response.status_code == 202
     data = response.json()
@@ -165,23 +158,14 @@ async def test_upload_duplicate_returns_409():
 
     file_content = b"Some document content"
 
-    with patch("app.services.document_service.aiofiles") as mock_aiofiles:
-        mock_file_ctx = AsyncMock()
-        mock_file_ctx.write = AsyncMock()
-        mock_aiofiles.open.return_value.__aenter__ = AsyncMock(
-            return_value=mock_file_ctx
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/pets/1/documents",
+            files={"file": ("doc.txt", io.BytesIO(file_content), "text/plain")},
         )
-        mock_aiofiles.open.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("os.makedirs"), patch("os.replace"), patch("os.path.exists", return_value=True), patch("os.remove"):
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                response = await client.post(
-                    "/pets/1/documents",
-                    files={"file": ("doc.txt", io.BytesIO(file_content), "text/plain")},
-                )
 
     assert response.status_code == 409
     assert "already exists" in response.json()["detail"]
@@ -206,7 +190,7 @@ async def test_upload_with_invalid_pet_id_returns_422(invalid_id):
 
 
 @pytest.mark.asyncio
-async def test_upload_file_size_exceeded_returns_413():
+async def test_upload_file_size_exceeded_returns_413(monkeypatch):
     mock_session = AsyncMock()
 
     pet = Pet(name="Hank", owner_name="John")
@@ -219,26 +203,17 @@ async def test_upload_file_size_exceeded_returns_413():
 
     _override_session(mock_session)
 
-    large_chunk = b"X" * (65_536)
+    monkeypatch.setattr("app.core.storage.MAX_FILE_SIZE_BYTES", 10)
+    large_chunk = b"X" * 64
 
-    with patch("app.services.document_service.aiofiles") as mock_aiofiles:
-        mock_file_ctx = AsyncMock()
-        mock_file_ctx.write = AsyncMock()
-        mock_aiofiles.open.return_value.__aenter__ = AsyncMock(
-            return_value=mock_file_ctx
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/pets/1/documents",
+            files={"file": ("large_doc.txt", io.BytesIO(large_chunk), "text/plain")},
         )
-        mock_aiofiles.open.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("app.services.document_service.MAX_FILE_SIZE_BYTES", 100):
-            with patch("os.makedirs"), patch("os.path.exists", return_value=True), patch("os.remove"):
-                async with AsyncClient(
-                    transport=ASGITransport(app=app),
-                    base_url="http://test",
-                ) as client:
-                    response = await client.post(
-                        "/pets/1/documents",
-                        files={"file": ("large_doc.txt", io.BytesIO(large_chunk), "text/plain")},
-                    )
 
     assert response.status_code == 413
     assert "exceeds maximum allowed limit" in response.json()["detail"]
@@ -287,23 +262,14 @@ async def test_upload_sanitizes_path_traversal_filename():
 
     file_content = b"Sanitization test content"
 
-    with patch("app.services.document_service.aiofiles") as mock_aiofiles:
-        mock_file_ctx = AsyncMock()
-        mock_file_ctx.write = AsyncMock()
-        mock_aiofiles.open.return_value.__aenter__ = AsyncMock(
-            return_value=mock_file_ctx
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/pets/1/documents",
+            files={"file": ("../../malicious/path/clean_doc.pdf", io.BytesIO(file_content), "application/pdf")},
         )
-        mock_aiofiles.open.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("os.makedirs"), patch("os.replace"), patch("os.path.exists", return_value=False):
-            async with AsyncClient(
-                transport=ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                response = await client.post(
-                    "/pets/1/documents",
-                    files={"file": ("../../malicious/path/clean_doc.pdf", io.BytesIO(file_content), "application/pdf")},
-                )
 
     assert response.status_code == 202
     assert response.json()["document_id"] == 12
@@ -699,5 +665,29 @@ async def test_poll_document_invalid_after_job_id_returns_422(invalid_after_job_
     assert response.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_document_service_helper_functions():
+    mock_session = AsyncMock()
+    storage = InMemoryStorageProvider()
 
+    pet = Pet(name="Hank", owner_name="John")
+    pet.id = 1
+    pet.created_at = datetime.now(timezone.utc)
 
+    mock_result_pet = MagicMock()
+    mock_result_pet.scalar_one_or_none.return_value = pet
+    mock_result_dup = MagicMock()
+    mock_result_dup.scalar_one_or_none.return_value = None
+
+    mock_session.execute.side_effect = [mock_result_pet, mock_result_dup]
+    mock_session.add = MagicMock()
+    mock_session.flush = AsyncMock()
+    mock_session.commit = AsyncMock()
+    mock_session.refresh = AsyncMock()
+
+    from fastapi import UploadFile
+    fake_upload = UploadFile(file=io.BytesIO(b"test content"), filename="test.txt")
+
+    doc, job = await upload_document(session=mock_session, pet_id=1, file=fake_upload, storage=storage)
+    assert doc.pet_id == 1
+    assert job.status == JobStatus.ENQUEUED
