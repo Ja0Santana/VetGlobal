@@ -22,6 +22,21 @@ def _override_session(mock_session):
     if not hasattr(mock_session, "add") or isinstance(mock_session.add, AsyncMock):
         mock_session.add = MagicMock()
 
+    if mock_session.execute.side_effect is None:
+        def _sync_execute(statement, *args, **kwargs):
+            s = str(statement).lower()
+            if "from jobs" in s or "jobs." in s:
+                current_ret = mock_session.execute.return_value
+                if current_ret is not None and hasattr(current_ret, "scalar_one_or_none"):
+                    val = current_ret.scalar_one_or_none.return_value
+                    if isinstance(val, Document):
+                        job_mock = MagicMock()
+                        job_mock.scalar_one_or_none.return_value = val.jobs[0] if (hasattr(val, "jobs") and val.jobs) else None
+                        return job_mock
+            return mock_session.execute.return_value
+
+        mock_session.execute.side_effect = _sync_execute
+
     async def _override():
         yield mock_session
 
@@ -183,7 +198,11 @@ async def test_long_poll_interrupted_by_worker_completion():
     doc.jobs = [job]
 
     async def dynamic_execute(statement, *args, **kwargs):
+        statement_str = str(statement).lower()
         mock_result = MagicMock()
+        if "jobs" in statement_str and "documents" not in statement_str:
+            mock_result.scalar_one_or_none.return_value = job
+            return mock_result
         mock_result.scalar_one_or_none.return_value = doc
         return mock_result
 
@@ -231,9 +250,16 @@ async def test_long_poll_timeout_returns_204():
     job.created_at = datetime.now(timezone.utc)
     doc.jobs = [job]
 
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = doc
-    mock_session.execute.return_value = mock_result
+    async def dynamic_execute(statement, *args, **kwargs):
+        statement_str = str(statement).lower()
+        mock_result = MagicMock()
+        if "jobs" in statement_str and "documents" not in statement_str:
+            mock_result.scalar_one_or_none.return_value = job
+            return mock_result
+        mock_result.scalar_one_or_none.return_value = doc
+        return mock_result
+
+    mock_session.execute.side_effect = dynamic_execute
     _override_session(mock_session)
 
     async with AsyncClient(
@@ -267,9 +293,16 @@ async def test_long_poll_client_disconnect_cancellation():
     job.created_at = datetime.now(timezone.utc)
     doc.jobs = [job]
 
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = doc
-    mock_session.execute.return_value = mock_result
+    async def dynamic_execute(statement, *args, **kwargs):
+        statement_str = str(statement).lower()
+        mock_result = MagicMock()
+        if "jobs" in statement_str and "documents" not in statement_str:
+            mock_result.scalar_one_or_none.return_value = job
+            return mock_result
+        mock_result.scalar_one_or_none.return_value = doc
+        return mock_result
+
+    mock_session.execute.side_effect = dynamic_execute
 
     call_count = 0
 

@@ -8,7 +8,6 @@ from fastapi import Depends, UploadFile
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.core.database import get_async_session
 from app.core.exceptions import (
@@ -116,22 +115,12 @@ class DocumentService:
     async def get_document_with_latest_job(
         self, document_id: int
     ) -> Tuple[Optional[Document], Optional[Job]]:
-        document_query = (
-            select(Document)
-            .options(selectinload(Document.jobs))
-            .where(Document.id == document_id)
-        )
+        document_query = select(Document).where(Document.id == document_id)
         document_result = await self.session.execute(document_query)
         document = document_result.scalar_one_or_none()
 
         if document is None:
             return None, None
-
-        if hasattr(document, "jobs") and document.jobs is not None:
-            if len(document.jobs) > 0:
-                latest_job = max(document.jobs, key=lambda item: (item.created_at, item.id))
-                return document, latest_job
-            return document, None
 
         job_query = (
             select(Job)
