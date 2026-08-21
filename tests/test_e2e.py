@@ -174,7 +174,12 @@ async def test_complete_e2e_successful_flow():
         assert "gastritis" in poll_data["latest_job"]["summary"]
 
         # Step 7: Worker Idempotency Check (Second callback on same job rejected)
-        mock_session.execute.return_value = mock_job_result
+        mock_none_res = MagicMock()
+        mock_none_res.scalar_one_or_none.return_value = None
+        mock_job_res = MagicMock()
+        mock_job_res.scalar_one_or_none.return_value = job
+
+        mock_session.execute.side_effect = [mock_none_res, mock_job_res]
         recomplete_resp = await client.post(
             "/internal/jobs/55/complete",
             json={

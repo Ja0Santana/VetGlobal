@@ -133,50 +133,45 @@ async def test_concurrent_document_upload_race_condition():
 async def test_concurrent_job_completion_race_condition():
     mock_session = AsyncMock()
 
-    job = Job(document_id=10, status=JobStatus.ENQUEUED)
-    job.id = 55
-    job.created_at = datetime.now(timezone.utc)
+    job_success = Job(document_id=1, status=JobStatus.ENQUEUED)
+    job_success.id = 55
+    job_success.created_at = datetime.now(timezone.utc)
 
-    lock = asyncio.Lock()
+    job_already_done = Job(document_id=1, status=JobStatus.DONE)
+    job_already_done.id = 55
+    job_already_done.created_at = datetime.now(timezone.utc)
+    job_already_done.completed_at = datetime.now(timezone.utc)
 
-    async def dynamic_execute(statement, *args, **kwargs):
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = job
-        return mock_result
+    res_1 = MagicMock()
+    res_1.scalar_one_or_none.return_value = job_success
 
-    mock_session.execute.side_effect = dynamic_execute
+    res_2_update_fail = MagicMock()
+    res_2_update_fail.scalar_one_or_none.return_value = None
 
-    async def dynamic_commit():
-        async with lock:
-            if getattr(job.status, "value", str(job.status)) == JobStatus.DONE.value:
-                return
-            job.status = JobStatus.DONE
-            job.completed_at = datetime.now(timezone.utc)
+    res_2_select_fallback = MagicMock()
+    res_2_select_fallback.scalar_one_or_none.return_value = job_already_done
 
-    mock_session.commit = dynamic_commit
+    mock_session.execute.side_effect = [res_1, res_2_update_fail, res_2_select_fallback]
     _override_session(mock_session)
-
-    async def complete_job_task(client_instance: AsyncClient, summary_text: str):
-        return await client_instance.post(
-            "/internal/jobs/55/complete",
-            json={"status": "DONE", "summary": summary_text},
-        )
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
     ) as client:
-        resp_1 = await client.post(
-            "/internal/jobs/55/complete",
-            json={"status": "DONE", "summary": "First worker finished"},
-        )
-        resp_2 = await client.post(
-            "/internal/jobs/55/complete",
-            json={"status": "DONE", "summary": "Second duplicate worker"},
+        resp_1, resp_2 = await asyncio.gather(
+            client.post(
+                "/internal/jobs/55/complete",
+                json={"status": "DONE", "summary": "First worker finished"},
+            ),
+            client.post(
+                "/internal/jobs/55/complete",
+                json={"status": "DONE", "summary": "Second duplicate worker"},
+            ),
         )
 
-    assert resp_1.status_code == 200
-    assert resp_2.status_code == 409
+    statuses = [resp_1.status_code, resp_2.status_code]
+    assert 200 in statuses
+    assert 409 in statuses
 
 
 @pytest.mark.asyncio

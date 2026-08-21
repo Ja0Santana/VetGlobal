@@ -54,11 +54,20 @@ API assincrona para ingestao, processamento e sumarizacao de prontuarios e docum
   - Tratamento atomico de `IntegrityError` na camada de servico: Caso ocorra colisao concorrente no `flush/commit`, o sistema executa `rollback()`, deleta o arquivo temporario gravado e lanca `DuplicateDocumentException` (`409 Conflict`).
 - **Racional Tecnico**: A garantia de deduplicacao nao depende exclusivamente de checagens na aplicacao, sendo forcada atomicamente pelo proprio banco de dados relacional.
 
-### 3.4. Idempotencia Estrita no Callback do Worker (HTTP 409 Conflict)
+### 3.4. Idempotencia Estrita no Callback via Atomic Conditional UPDATE (Compare-and-Swap / FSM)
 
-- **Motivacao**: Workers distribuidos de IA/OCR operam com semantica *at-least-once*, podendo reenviar mensagens de conclusao em caso de retentativas de rede.
-- **Decisao**: O endpoint `POST /internal/jobs/{job_id}/complete` so aceita finalizar jobs que estejam estritamente em `ENQUEUED`. Tentativas de finalizar jobs em `DONE` ou `FAILED` sao rejeitadas imediatamente com `HTTP 409 Conflict`.
-- **Racional Tecnico**: Evita sobrescrita de resumos clinicos validos e protege os timestamps originais de auditoria medica (`completed_at`).
+- **Motivacao**: Workers distribuidos de IA/OCR operam com semantica *at-least-once*, podendo reenviar mensagens de conclusao em caso de retentativas de rede ou execucoes concorrentes.
+- **Decisao**: Adocao do padrao de transicao atomica de estado (*Atomic Conditional UPDATE*):
+
+  ```sql
+  UPDATE jobs
+  SET status = :status, summary = :summary, error_message = :error, completed_at = :now
+  WHERE id = :job_id AND status = 'ENQUEUED'
+  RETURNING *;
+  ```
+  
+  Se a instrucao afetar 0 linhas, o servico realiza uma consulta simples para distinguir `404 Not Found` (job inexistente) de `409 Conflict` (`JobAlreadyCompletedException`).
+- **Racional Tecnico**: Elimina a vulnerabilidade de condicao de corrida de leitura previa (`SELECT + check em memoria`), executando a validacao de estado e a mutacao em uma unica operacao atomica no PostgreSQL sem reter locks pessimistas.
 
 ### 3.5. Long Polling Assincrono com Reset Transacional e Cancelamento Ativo
 
@@ -133,7 +142,7 @@ Os seguintes itens foram deliberadamente mantidos fora do escopo inicial para pr
 1. **Pipeline Real de IA/OCR**: O processamento pesado por LLM ou OCR e simulado via endpoint interno de callback, desacoplando a ingestao REST do worker de computacao.
 2. **Autenticacao, Autorizacao e Multi-Tenancy**: Ausencia de tokens JWT/OAuth2 e segregacao por clinica (`tenant_id`), simplificando a avaliacao do core do processamento.
 3. **Provedor Gerenciado de Object Storage (AWS S3)**: Persistencia padrao mantida localmente, desenhada para receber adaptadores S3/Blob como extensao futura.
-4. **Metricas Prometheus e Rastreamento Distribuido (OpenTelemetry)**: Observabilidade coberta por logging estruturado, middleware `X-Request-ID` e endpoint `/health`.
+4. **Metricas Prometheus e Rastreamento Distribuido (OpenTelemetry)**: Observabilidade basica coberta por correlacao via middleware `X-Request-ID` e endpoint `/health`.
 
 ---
 
