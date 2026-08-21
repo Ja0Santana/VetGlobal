@@ -137,8 +137,9 @@ async def poll_document(
         ge=0,
         description="Only return jobs with ID greater than this value (default: 0)",
     ),
-    timeout: float = Query(
+    timeout_seconds: float = Query(
         default=25.0,
+        alias="timeout",
         ge=1.0,
         le=25.0,
         description="Long-polling timeout in seconds (maximum: 25.0s)",
@@ -150,7 +151,7 @@ async def poll_document(
         document, latest_job = await service.poll_document_status(
             document_id=document_id,
             after_job_id=after_job_id,
-            timeout_seconds=timeout,
+            timeout_seconds=timeout_seconds,
             poll_interval_seconds=1.0,
             is_disconnected_callable=request.is_disconnected,
         )

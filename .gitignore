@@ -30,3 +30,5 @@ storage/uploads/*
 .idea/
 .vscode/
 skills/
+coverage.xml
+.scannerwork/
