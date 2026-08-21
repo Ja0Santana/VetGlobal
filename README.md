@@ -16,7 +16,20 @@ API assincrona para ingestao, processamento e sumarizacao de prontuarios e docum
 
 ---
 
-## 2. Estrutura de Diretorios Atual
+## 2. Premissas
+
+- Um pet é identificado atualmente por um ID no banco de dados.
+- Autenticação e isolamento entre tenants estão fora do escopo deste exercício.
+- Apenas documentos .txt e .pdf são aceitos.
+- O tamanho máximo de um documento é de 20 MB.
+- Um documento pode ser processado apenas uma vez no fluxo atual.
+- Documentos com o mesmo conteúdo para o mesmo pet são rejeitados.
+- A conclusão de um job só é permitida enquanto ele estiver com status ENQUEUED.
+- O endpoint de polling retorna 204 No Content quando o tempo limite configurado é atingido sem que o processamento seja concluído.
+
+---
+
+## 3. Estrutura de Diretorios Atual
 
 ```text
 VetGlobal/
@@ -78,14 +91,14 @@ VetGlobal/
 
 ---
 
-## 3. Instrucoes de Execucao
+## 4. Instrucoes de Execucao
 
-### 3.1. Pre-requisitos
+### 4.1. Pre-requisitos
 
 - Docker e Docker Compose instalados, OU
 - Python 3.11+ e PostgreSQL 16 configurados localmente.
 
-### 3.2. Execucao via Docker Compose (Recomendado)
+### 4.2. Execucao via Docker Compose (Recomendado)
 
 1. Clonar o repositorio:
 
@@ -111,7 +124,7 @@ VetGlobal/
    - **Healthcheck**: `http://localhost:8000/health`
    - **Documentacao Interativa (Swagger/OpenAPI)**: `http://localhost:8000/docs`
 
-### 3.3. Execucao Local (Ambiente de Desenvolvimento)
+### 4.3. Execucao Local (Ambiente de Desenvolvimento)
 
 1. Criar e ativar o ambiente virtual:
 
@@ -150,7 +163,7 @@ VetGlobal/
 
 ---
 
-## 4. Instrucoes de Testes e Cobertura de Codigo
+## 5. Instrucoes de Testes e Cobertura de Codigo
 
 Os testes automatizados cobrem testes unitarios, de integracao e ponta a ponta (E2E) com `pytest`, `pytest-asyncio`, `httpx` e `pytest-cov`:
 
@@ -164,7 +177,7 @@ pytest -v --cov=app --cov-report=term-missing
 
 ---
 
-## 5. Endpoints Implementados
+## 6. Endpoints Implementados
 
 ### `GET /health`
 
@@ -302,7 +315,6 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 - **Resposta quando Concluido (`200 OK`)**:
 
   ```json
-
   {
     "id": 10,
     "pet_id": 1,
@@ -326,15 +338,15 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 
 ---
 
-## 6. Modelagem de Dominio e Decisoes de Banco (Fase 2)
+## 7. Modelagem de Dominio e Decisoes de Banco (Fase 2)
 
-### 6.1. Modelos Implementados
+### 7.1. Modelos Implementados
 
 - **`Pet` (`pets`)**: Cadastro basico do animal (`name`, `owner_name`, `created_at`).
 - **`Document` (`documents`)**: Metadados do arquivo anexado (`pet_id`, `filename`, `file_path`, `file_hash`, `created_at`).
 - **`Job` (`jobs`)**: Rastreabilidade do processamento assincrono (`document_id`, `status`, `summary`, `error_message`, `created_at`, `started_at`, `completed_at`, `updated_at`).
 
-### 6.2. Decisoes Tecnicas Adotadas
+### 7.2. Decisoes Tecnicas Adotadas
 
 1. **SQLAlchemy 2.0 Declarative Mapping**:
    - Uso de `Mapped[...]` e `mapped_column(...)`, garantindo tipagem estatica estrita e validacao pelo Pyright/Mypy.
@@ -356,7 +368,7 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 6. **Migracoes Versionadas com Alembic**:
    - Criacao do script `0001_initial_schema.py` com suporte a execucao assincrona via `migrations/env.py`.
 
-### 6.3. Decisoes de Ingestao e Inversao de Dependencias (Fase 3)
+### 7.3. Decisoes de Ingestao e Inversao de Dependencias (Fase 3)
 
 1. **Inversao de Dependencias no Storage (Ports & Adapters)**:
    - Abstracao da persistencia de arquivos atraves da interface `StorageProvider` (`app/core/storage.py`) e DTO imutavel `StoredFile`.
@@ -377,7 +389,7 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
    - Validacao de parametros de rota (`pet_id`, `document_id`) com restricao de inteiros positivos (`ge=1`).
    - Protecao contra Path Traversal no upload de documentos via `os.path.basename` e limite maximo de tamanho de arquivo de 20MB (`413 Content Too Large`).
 
-### 6.4. Decisoes de Callback do Worker e Consulta (Fase 4)
+### 7.4. Decisoes de Callback do Worker e Consulta (Fase 4)
 
 1. **Consistencia Estrita de Payload de Callback (Discriminated Union)**:
    - Separacao em DTOs especificos (`JobSuccessRequest` e `JobFailureRequest`) com discriminator `status`, eliminando campos redundantes e gerando documentacao OpenAPI/Swagger limpa.
@@ -394,7 +406,7 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 5. **Isolamento e Seguranca de Rotas Internas**:
    - Em ambiente produtivo corporativo, rotas sob `/internal/*` nao sao expostas na internet publica, ficando isoladas na VPC/rede interna de workers ou protegidas por tokens de autenticacao de servico (mTLS / Shared Secret).
 
-### 6.5. Decisoes de Long Polling e Tempo Real (Fase 5)
+### 7.5. Decisoes de Long Polling e Tempo Real (Fase 5)
 
 1. **Assincronismo Nao-Bloqueante com `asyncio.sleep`**:
    - As conexoes abertas durante os 25 segundos de polling utilizam o event loop assincrono, consumindo uso minimo de memoria e CPU sem prender threads do servidor.
@@ -414,7 +426,7 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 6. **Desativacao de Cache HTTP (`Cache-Control: no-cache, no-store`)**:
    - Respostas do endpoint `/poll` contem headers explicitos para evitar que proxies ou navegadores utilizem respostas em cache.
 
-### 6.6. Decisoes de Testes e Integracao E2E (Fase 6)
+### 7.6. Decisoes de Testes e Integracao E2E (Fase 6)
 
 1. **Piramide de Testes Completa**:
    - **Unitarios & Integracao**: Validação individual de cada camada (routers, services, exceptions, schemas) cobrindo caminhos felizes, bordas e cenários de erro (`400`, `404`, `409`, `413`, `422`).
@@ -425,9 +437,9 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 
 ---
 
-## 7. Decisoes de Arquitetura e Trade-offs
+## 8. Decisoes de Arquitetura e Trade-offs
 
-### 7.1. Long Polling vs. WebSockets / Server-Sent Events (SSE)
+### 8.1. Long Polling vs. WebSockets / Server-Sent Events (SSE)
 
 - **Decisao**: Adocao de Long Polling com timeout configuravel de 25 segundos (`GET /documents/{id}/poll`).
 - **Vantagens**:
@@ -438,7 +450,7 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
   - *Overhead no Banco*: Polling periodico a cada 1s foi mitigado com `session.rollback()` antes de cada repouso assincrono, liberando a conexao transacional no PostgreSQL.
   - *Desconexoes*: Verificacao ativa de `request.is_disconnected` para abortar o loop imediatamente caso o cliente feche a conexao.
 
-### 7.2. DB-Backed Queue vs. Message Broker Externo (RabbitMQ / SQS)
+### 8.2. DB-Backed Queue vs. Message Broker Externo (RabbitMQ / SQS)
 
 - **Decisao**: Persistencia da fila de processamento na tabela `jobs` do PostgreSQL com estados `ENQUEUED`, `PROCESSING`, `DONE` e `FAILED`.
 - **Vantagens**:
@@ -447,14 +459,14 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 - **Trade-offs**:
   - Em escala massiva (milhoes de jobs concorrentes), a tabela `jobs` requer particionamento ou migracao para um broker dedicado com Dead Letter Queue (DLQ).
 
-### 7.3. Ports & Adapters para Persistencia de Arquivos
+### 8.3. Ports & Adapters para Persistencia de Arquivos
 
 - **Decisao**: Criacao da interface abstrata `StorageProvider` desacoplando a gravacao de arquivos da logica de negocio.
 - **Vantagens**:
   - Flexibilidade total para alternar entre `LocalStorageProvider` (desenvolvimento/testes) e futuros adaptadores como `S3StorageProvider` ou `GCSStorageProvider` apenas alterando a injecao de dependencias.
   - Testabilidade: Permite o uso de `InMemoryStorageProvider` em suites de testes unitarios de alta velocidade sem I/O real em disco.
 
-### 7.4. Estrategia de Idempotencia no Callback
+### 8.4. Estrategia de Idempotencia no Callback
 
 - **Decisao**: Bloqueio de transicao com retorno explicito de `HTTP 409 Conflict` caso o job ja tenha saido do estado `ENQUEUED`.
 - **Vantagens**:
@@ -463,7 +475,7 @@ Endpoint de Long Polling que segura a conexao HTTP aberta por ate 25 segundos ag
 
 ---
 
-## 8. Escopo Intencionalmente Incompleto
+## 9. Escopo Intencionalmente Incompleto
 
 Os seguintes itens foram **deliberadamente deixados fora do escopo inicial** para manter o projeto coeso, focado nos requisitos do desafio e sem complexidade desnecessaria:
 
